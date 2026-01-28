@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minimal Multiplayer Test</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Arial', sans-serif;
+      overflow: hidden;
+      background: #000;
+    }
+    #app {
+      width: 100vw;
+      height: 100vh;
+    }
+    #ui {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 100;
+    }
+    #lobby {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.9);
+      padding: 40px;
+      border-radius: 10px;
+      text-align: center;
+      pointer-events: all;
+      color: white;
+    }
+    #lobby h1 {
+      margin-bottom: 20px;
+      font-size: 2.5em;
+    }
+    #joinButton {
+      padding: 15px 40px;
+      font-size: 1.2em;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+    #joinButton:hover {
+      background: #45a049;
+    }
+    #joinButton:disabled {
+      background: #666;
+      cursor: not-allowed;
+    }
+    #readyButton {
+      padding: 15px 40px;
+      font-size: 1.2em;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    #readyButton:hover {
+      opacity: 0.9;
+    }
+    #readyButton:disabled {
+      background: #666;
+      cursor: not-allowed;
+    }
+    #gameInfo {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 15px;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+    #scoreboard {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      color: white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 15px;
+      border-radius: 5px;
+      font-size: 14px;
+    }
+    .team-score {
+      margin: 5px 0;
+    }
+    .red-team { color: #ff4444; }
+    .blue-team { color: #4444ff; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="ui">
+    <div id="lobby">
+      <h1>Minimal Multiplayer</h1>
+      <p>Server-Authoritative Test</p>
+      <button id="joinButton">Connect</button>
+      <p id="playerCount" style="margin-top: 20px;">Click "Connect" to join</p>
+      <p id="connectionStatus" style="margin-top: 10px; font-size: 12px; color: #888;">Not connected</p>
+    </div>
+    <div id="gameInfo" style="display: none;">
+      <div>Team: <span id="teamName"></span></div>
+      <div>Players: <span id="currentPlayers">0</span>/<span id="maxPlayers">10</span></div>
+      <div style="margin-top: 10px;">
+        <button id="editorBtn" style="padding: 5px 10px; font-size: 12px;">Map Editor</button>
+      </div>
+    </div>
+    <div id="scoreboard" style="display: none;">
+      <div class="team-score red-team">Red: <span id="redScore">0</span></div>
+      <div class="team-score blue-team">Blue: <span id="blueScore">0</span></div>
+    </div>
+    <div id="respawnOverlay" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, 0.8); padding: 40px; border-radius: 10px; text-align: center; color: white; font-size: 24px;">
+      <div style="margin-bottom: 10px;">💀 Eliminated!</div>
+      <div>Respawning in <span id="respawnTimer">5</span>s</div>
+    </div>
+  </div>
+  <script type="module" src="/src/minimalMain.js"></script>
+  <script type="module">
+    // Diagnostic: Check if minimalMain.js loaded
+    window.addEventListener('error', (e) => {
+      if (e.filename && e.filename.includes('minimalMain.js')) {
+        console.error('❌ Error in minimalMain.js:', e.message, e.filename, e.lineno);
+      }
+    });
+  </script>
+</body>
+</html>
