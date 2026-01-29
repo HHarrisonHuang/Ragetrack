@@ -88,6 +88,11 @@ io.on('connection', (socket) => {
   socket.on('playerReady', () => {
     gameServer.handlePlayerReady(socket.id);
   });
+
+  socket.on('customMap', (mapData) => {
+    console.log('📥 Received custom map from client:', socket.id);
+    gameServer.setCustomMap(mapData);
+  });
 });
 
 // ============================================

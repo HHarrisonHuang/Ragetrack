@@ -34,6 +34,9 @@ export class GameServer {
       blue: { position: null, carriedBy: null },
     };
     
+    // Store custom map (most recent one uploaded)
+    this.customMap = null;
+    
     this.lastUpdate = Date.now();
     this.gameLoopInterval = null;
 
@@ -57,6 +60,13 @@ export class GameServer {
         this.mapCollidersCreated = false;
       });
     this.initializeFlags();
+  }
+
+  setCustomMap(mapData) {
+    console.log('🗺️ Setting custom map as active map');
+    this.customMap = mapData;
+    // Update the active map immediately
+    this.setMap(mapData);
   }
 
   async ensureMapReady() {
@@ -344,9 +354,14 @@ export class GameServer {
       this.scores = { red: 0, blue: 0 };
       this.broadcastGameState();
       
+      // Use custom map if available, otherwise default
+      const mapToUse = this.customMap ? 'customMap' : 'defaultMap.json';
+      console.log(`🎮 Starting game with map: ${mapToUse}`);
+      
       this.io.emit('gameStart', {
-        map: 'defaultMap.json',
+        map: mapToUse,
         scores: this.scores,
+        mapData: this.customMap || null, // Send custom map data directly
       });
     }, 2000);
   }
@@ -502,7 +517,10 @@ export class GameServer {
       
       // Check win condition
       if (this.scores[player.team] >= GAME.WIN_SCORE) {
-        this.endGame(player.team);
+        // Wait 1 second before ending game
+        setTimeout(() => {
+          this.endGame(player.team);
+        }, 1000);
       }
       
       return true;

@@ -47,6 +47,11 @@ export class Game {
     try {
       this.setupScene();
       console.log('✅ Scene setup complete');
+      // Start rendering immediately (needed for lobby/editor views too)
+      if (!this.animationFrameId) {
+        console.log('🎬 Starting animation loop (no car yet)');
+        this.animate();
+      }
       this.setupNetwork();
       console.log('✅ Network setup complete');
       this.setupUI();
@@ -130,6 +135,8 @@ export class Game {
     // Map editor
     this.mapEditor = new MapEditor(this.scene, this.physicsWorld);
     this.mapEditor.setCamera(this.camera);
+    this.mapEditor.setDomElement?.(this.renderer.domElement);
+    // Set callbacks after network is set up (in setupNetwork)
     
     // Camera controller
     this.cameraController = new CameraController(this.camera);
@@ -176,7 +183,11 @@ export class Game {
       try {
         this.networkManager.joinGame();
         btn.disabled = true;
-        btn.textContent = 'Connecting...';
+        // Change button image to show connecting state
+        const img = btn.querySelector('img');
+        if (img) {
+          img.style.opacity = '0.5';
+        }
         
         // Update connection status
         const statusEl = document.getElementById('connectionStatus');
@@ -193,8 +204,19 @@ export class Game {
     });
     
     console.log('✅ Join button handler attached successfully');
+
+    // Lobby Map Editor button (blank editor session)
+    const lobbyEditorBtn = document.getElementById('lobbyEditorBtn');
+    if (lobbyEditorBtn) {
+      lobbyEditorBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.enterMapEditorFromLobby();
+      });
+    }
     
     const readyButton = document.getElementById('readyButton');
+    const notReadyButton = document.getElementById('notReadyButton');
     if (readyButton) {
       readyButton.addEventListener('click', () => {
         if (this.networkManager) {
@@ -202,11 +224,23 @@ export class Game {
         }
       });
     }
+    if (notReadyButton) {
+      notReadyButton.addEventListener('click', () => {
+        if (this.networkManager) {
+          this.networkManager.sendReady();
+        }
+      });
+    }
     
-    // Map editor button (for development/testing)
+    // Map editor button (disabled during gameplay, only works in lobby)
     const editorBtn = document.getElementById('editorBtn');
     if (editorBtn) {
       editorBtn.addEventListener('click', () => {
+        // Only allow editor in lobby, not during gameplay
+        if (this.gameState !== 'lobby' && this.gameState !== 'waiting') {
+          alert('Map editor is only available in the lobby. Please wait for the game to end.');
+          return;
+        }
         if (this.mapEditor) {
           if (this.mapEditor.isEditing) {
             this.mapEditor.stopEditing();
@@ -220,10 +254,82 @@ export class Game {
     }
   }
 
+  enterMapEditorFromLobby() {
+    console.log('🗺️ Entering Map Editor from lobby (blank map)');
+
+    // Hide lobby UI, show only editor overlay UI
+    const lobby = document.getElementById('lobby');
+    if (lobby) lobby.style.display = 'none';
+    const gameInfo = document.getElementById('gameInfo');
+    const scoreboard = document.getElementById('scoreboard');
+    if (gameInfo) gameInfo.style.display = 'none';
+    if (scoreboard) scoreboard.style.display = 'none';
+
+    // Make sure no car / remote players are displayed
+    if (this.car) {
+      this.car.destroy?.();
+      this.car = null;
+    }
+    this.remotePlayers?.forEach?.((remote) => {
+      if (remote?.mesh) this.scene?.remove?.(remote.mesh);
+      if (remote?.flagIndicator) this.scene?.remove?.(remote.flagIndicator);
+    });
+    this.remotePlayers?.clear?.();
+
+    // Clear any map objects that were loaded for the initial view
+    this.mapLoader?.clearMap?.();
+
+    // Start editor in blank mode (MapEditor will create its own ground/grid)
+    if (this.mapEditor) {
+      this.mapEditor.startEditing({ blank: true });
+    } else {
+      console.warn('⚠️ mapEditor is not initialized');
+    }
+
+    // Ensure render loop is running (editor needs it even without a car)
+    if (!this.animationFrameId) {
+      console.log('🎬 Starting animation loop (editor)');
+      this.animate();
+    }
+  }
+
+  returnToLobbyFromEditor() {
+    console.log('🏠 Returning to lobby from editor');
+    
+    // Show lobby UI
+    const lobby = document.getElementById('lobby');
+    if (lobby) lobby.style.display = 'flex';
+    
+    // Hide game UI elements
+    const gameInfo = document.getElementById('gameInfo');
+    const scoreboard = document.getElementById('scoreboard');
+    if (gameInfo) gameInfo.style.display = 'none';
+    if (scoreboard) scoreboard.style.display = 'none';
+    
+    // Re-enable map editor button (we're back in lobby)
+    const editorBtn = document.getElementById('editorBtn');
+    if (editorBtn) {
+      editorBtn.disabled = false;
+      editorBtn.style.opacity = '1';
+      editorBtn.style.cursor = 'pointer';
+    }
+    
+    // Clear editor objects but keep the scene ready
+    // (MapEditor.stopEditing already handles cleanup)
+  }
+
   setupNetwork() {
     console.log('🔧 Setting up network...');
     this.networkManager = new NetworkManager();
     console.log('✅ NetworkManager created:', this.networkManager);
+    
+    // Wire up map editor to network manager
+    if (this.mapEditor) {
+      this.mapEditor.setNetworkManager(this.networkManager);
+      this.mapEditor.setReturnToLobbyCallback(() => {
+        this.returnToLobbyFromEditor();
+      });
+    }
     
     this.networkManager.on('socketConnected', () => {
       console.log('📡 Socket connected event received');
@@ -240,7 +346,13 @@ export class Game {
       const joinButton = document.getElementById('joinButton');
       const statusEl = document.getElementById('connectionStatus');
       if (joinButton) {
-        joinButton.textContent = 'Joined!';
+        // Change button image to joined state
+        const img = joinButton.querySelector('img');
+        if (img) {
+          img.src = '/images/joinedButton.png';
+          img.style.opacity = '1';
+        }
+        joinButton.disabled = true;
       }
       if (statusEl) {
         statusEl.textContent = 'Connected';
@@ -500,16 +612,13 @@ export class Game {
         if (readyCountEl) readyCountEl.textContent = readyCount;
         if (totalPlayersEl) totalPlayersEl.textContent = playerCount;
         
+        const notReadyButton = document.getElementById('notReadyButton');
         if (this.networkManager.isReady) {
-          if (readyButton) {
-            readyButton.textContent = 'Not Ready';
-            readyButton.style.background = '#f44336';
-          }
+          if (readyButton) readyButton.style.display = 'none';
+          if (notReadyButton) notReadyButton.style.display = 'inline-block';
         } else {
-          if (readyButton) {
-            readyButton.textContent = 'Ready';
-            readyButton.style.background = '#4CAF50';
-          }
+          if (readyButton) readyButton.style.display = 'inline-block';
+          if (notReadyButton) notReadyButton.style.display = 'none';
         }
       } else {
         if (readySection) readySection.style.display = 'none';
@@ -731,50 +840,71 @@ export class Game {
     this.gameState = 'playing';
     this.isMultiplayer = true;
     
-    // Load map
-    const mapName = data.map || 'defaultMap.json';
-    console.log('📦 Loading map:', mapName);
-    console.log('📦 Scene children BEFORE loading map:', this.scene.children.length);
+    // Disable map editor button during gameplay
+    const editorBtn = document.getElementById('editorBtn');
+    if (editorBtn) {
+      editorBtn.disabled = true;
+      editorBtn.style.opacity = '0.5';
+      editorBtn.style.cursor = 'not-allowed';
+    }
     
-    this.mapLoader.loadMap(mapName).then((mapData) => {
-      console.log('✅ Map loaded:', mapData);
-      console.log('📦 Scene children AFTER loading map:', this.scene.children.length);
-      console.log('🚩 Flags after map load:', { 
-        red: !!this.mapLoader.flags.red, 
-        blue: !!this.mapLoader.flags.blue 
-      });
-      
-      // Debug: List all flags in scene
-      let flagCount = 0;
-      this.scene.traverse((obj) => {
-        if (obj.userData && obj.userData.isFlag) {
-          flagCount++;
-          const worldPos = new THREE.Vector3();
-          obj.getWorldPosition(worldPos);
-          console.log(`🚩 Flag in scene after load: team=${obj.userData.team}, pos=`, worldPos);
-        }
-      });
-      console.log(`🚩 Total flags in scene: ${flagCount}`);
-      
-      document.getElementById('lobby').style.display = 'none';
-      document.getElementById('gameInfo').style.display = 'block';
-      document.getElementById('scoreboard').style.display = 'block';
-    }).catch((error) => {
-      console.error('❌ Failed to load map:', error);
-      // Try loading default map
-      this.mapLoader.loadDefaultMap().then(() => {
-        console.log('📦 Default map loaded as fallback');
-        console.log('📦 Scene children after fallback:', this.scene.children.length);
-        document.getElementById('lobby').style.display = 'none';
-        document.getElementById('gameInfo').style.display = 'block';
-        document.getElementById('scoreboard').style.display = 'block';
-      }).catch((err) => {
-        console.error('❌ Failed to load default map:', err);
+    // Use custom map data if provided, otherwise load from file
+    if (data.mapData) {
+      console.log('📦 Using custom map data from server');
+      this.mapLoader.clearMap();
+      this.mapLoader.createMapGeometry(data.mapData);
+      this.mapLoader.createFlags(data.mapData).then(() => {
+        console.log('✅ Custom map loaded');
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('gameInfo').style.display = 'block';
         document.getElementById('scoreboard').style.display = 'block';
       });
-    });
+    } else {
+      // Load map from file
+      const mapName = data.map || 'defaultMap.json';
+      console.log('📦 Loading map:', mapName);
+      console.log('📦 Scene children BEFORE loading map:', this.scene.children.length);
+      
+      this.mapLoader.loadMap(mapName).then((mapData) => {
+        console.log('✅ Map loaded:', mapData);
+        console.log('📦 Scene children AFTER loading map:', this.scene.children.length);
+        console.log('🚩 Flags after map load:', { 
+          red: !!this.mapLoader.flags.red, 
+          blue: !!this.mapLoader.flags.blue 
+        });
+        
+        // Debug: List all flags in scene
+        let flagCount = 0;
+        this.scene.traverse((obj) => {
+          if (obj.userData && obj.userData.isFlag) {
+            flagCount++;
+            const worldPos = new THREE.Vector3();
+            obj.getWorldPosition(worldPos);
+            console.log(`🚩 Flag in scene after load: team=${obj.userData.team}, pos=`, worldPos);
+          }
+        });
+        console.log(`🚩 Total flags in scene: ${flagCount}`);
+        
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameInfo').style.display = 'block';
+        document.getElementById('scoreboard').style.display = 'block';
+      }).catch((error) => {
+        console.error('❌ Failed to load map:', error);
+        // Try loading default map
+        this.mapLoader.loadDefaultMap().then(() => {
+          console.log('📦 Default map loaded as fallback');
+          console.log('📦 Scene children after fallback:', this.scene.children.length);
+          document.getElementById('lobby').style.display = 'none';
+          document.getElementById('gameInfo').style.display = 'block';
+          document.getElementById('scoreboard').style.display = 'block';
+        }).catch((err) => {
+          console.error('❌ Failed to load default map:', err);
+          document.getElementById('lobby').style.display = 'none';
+          document.getElementById('gameInfo').style.display = 'block';
+          document.getElementById('scoreboard').style.display = 'block';
+        });
+      });
+    }
 
     // Update scoreboard
     this.updateScoreboard(data.scores || { red: 0, blue: 0 });
@@ -783,12 +913,77 @@ export class Game {
   endGame(data) {
     this.gameState = 'ended';
     const winner = data.winner;
-    alert(`Game Over! ${winner} team wins!`);
+    const scores = data.scores || { red: 0, blue: 0 };
     
-    // Reset after delay
-    setTimeout(() => {
-      location.reload();
-    }, 5000);
+    // Re-enable map editor button when game ends (will return to lobby)
+    const editorBtn = document.getElementById('editorBtn');
+    if (editorBtn) {
+      editorBtn.disabled = false;
+      editorBtn.style.opacity = '1';
+      editorBtn.style.cursor = 'pointer';
+    }
+    
+    // Hide game UI
+    const gameInfo = document.getElementById('gameInfo');
+    const scoreboard = document.getElementById('scoreboard');
+    if (gameInfo) gameInfo.style.display = 'none';
+    if (scoreboard) scoreboard.style.display = 'none';
+    
+    // Show win/lose overlay
+    const overlay = document.getElementById('gameEndOverlay');
+    const victoryBg = document.getElementById('victoryBackground');
+    const defeatBg = document.getElementById('defeatBackground');
+    const title = document.getElementById('gameEndTitle');
+    const message = document.getElementById('gameEndMessage');
+    const scoresEl = document.getElementById('gameEndScores');
+    const returnBtn = document.getElementById('returnToLobby');
+    
+    if (overlay && message && scoresEl) {
+      // Determine if player won
+      const playerWon = winner && winner === this.team;
+      
+      // Show appropriate background (title is in background image)
+      if (playerWon) {
+        if (victoryBg) victoryBg.style.display = 'block';
+        if (defeatBg) defeatBg.style.display = 'none';
+        message.textContent = `Your team (${winner.toUpperCase()}) captured 3 flags!`;
+        message.style.color = this.team === 'red' ? '#ff4444' : '#4444ff';
+      } else if (winner && winner !== 'none') {
+        if (victoryBg) victoryBg.style.display = 'none';
+        if (defeatBg) defeatBg.style.display = 'block';
+        message.textContent = `${winner.toUpperCase()} team captured 3 flags!`;
+        message.style.color = '#ccc';
+      } else {
+        if (victoryBg) victoryBg.style.display = 'none';
+        if (defeatBg) defeatBg.style.display = 'block';
+        message.textContent = 'The game has ended.';
+        message.style.color = '#ccc';
+      }
+      
+      scoresEl.innerHTML = `
+        <div class="team-score red-team" style="margin-bottom: 10px;">Red: ${scores.red}</div>
+        <div class="team-score blue-team">Blue: ${scores.blue}</div>
+      `;
+      
+      overlay.style.display = 'block';
+      
+      // Return to lobby button
+      if (returnBtn) {
+        returnBtn.onclick = () => {
+          location.reload();
+        };
+        // Add hover effect
+        const img = returnBtn.querySelector('img');
+        if (img) {
+          returnBtn.addEventListener('mouseenter', () => {
+            img.style.transform = 'scale(1.05)';
+          });
+          returnBtn.addEventListener('mouseleave', () => {
+            img.style.transform = 'scale(1)';
+          });
+        }
+      }
+    }
   }
 
   updateUI() {
@@ -850,6 +1045,11 @@ export class Game {
     this.animationFrameId = requestAnimationFrame((time) => {
       const deltaTime = Math.min((time - this.lastTime) / 1000, 0.1);
       this.lastTime = time;
+
+      // Map editor camera controls need per-frame update for damping.
+      if (this.mapEditor?.isEditing && this.mapEditor.controls) {
+        this.mapEditor.controls.update();
+      }
 
       if (this.car) {
         // Update input from keyboard

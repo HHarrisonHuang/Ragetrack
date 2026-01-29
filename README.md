@@ -33,6 +33,63 @@ This will start:
 - Client on http://localhost:3000
 - Server on http://localhost:3001
 
+## Play with friends online (Tunnel / ngrok)
+
+This is the quickest way for **friends in different places** to join your server without port-forwarding.
+
+### Prereqs
+
+- Install ngrok: `https://ngrok.com/download`
+
+### Host (you)
+
+1. Start the server:
+
+```powershell
+cd C:\Ragetrack\server
+npm run start
+```
+
+2. Start an ngrok tunnel to the server port:
+
+```powershell
+ngrok http 3001
+```
+
+Copy the **Forwarding** URL ngrok prints (example: `https://abcd-1234.ngrok-free.app`).
+
+3. Start the client pointing at the ngrok URL:
+
+```powershell
+cd C:\Ragetrack\client
+$env:VITE_SERVER_URL="https://abcd-1234.ngrok-free.app"
+npm run dev
+```
+
+Open the client (Vite prints a URL like `http://localhost:3000`).
+
+### Friends
+
+Your friends run the client locally and use **the same** `VITE_SERVER_URL`:
+
+```powershell
+cd C:\Ragetrack\client
+$env:VITE_SERVER_URL="https://abcd-1234.ngrok-free.app"
+npm run dev
+```
+
+Then they open their own `http://localhost:3000` and click **Join Game**.
+
+### Quick check
+
+From any machine, this should work (shows JSON):
+
+- `https://<your-ngrok-host>/status`
+
+### Note on CORS
+
+Your Socket.IO server currently allows `http://localhost:3000` as the web client origin (see `server/src/index.js`). This is **fine** if everyone runs the client locally (friends will also be on `http://localhost:3000`). If you later host the client on a real domain, you’ll need to update that allowed origin.
+
 ## Game Rules
 
 - **Teams**: Red and Blue

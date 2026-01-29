@@ -30,52 +30,122 @@
     }
     #lobby {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(0, 0, 0, 0.9);
-      padding: 40px;
-      border-radius: 10px;
-      text-align: center;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-image: url('/images/lobbyBackground.jpeg');
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
       pointer-events: all;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       color: white;
+    }
+    #lobbyContent {
+      text-align: center;
+      margin-top: auto;
+      margin-bottom: 100px;
+    }
+    #lobbyButtons {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .lobby-secondary-btn {
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.25);
+      color: white;
+      padding: 10px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+      letter-spacing: 0.5px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+      transition: transform 0.15s, background 0.15s;
+    }
+    .lobby-secondary-btn:hover {
+      transform: scale(1.03);
+      background: rgba(0,0,0,0.6);
     }
     #lobby h1 {
-      margin-bottom: 20px;
-      font-size: 2.5em;
+      display: none; /* Title is in background */
+    }
+    #lobby p {
+      font-size: 1.2em;
+      margin-bottom: 30px;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
     }
     #joinButton {
-      padding: 15px 40px;
-      font-size: 1.2em;
-      background: #4CAF50;
-      color: white;
+      background: transparent;
       border: none;
-      border-radius: 5px;
       cursor: pointer;
-      margin-top: 20px;
+      padding: 0;
+      margin: 10px;
     }
-    #joinButton:hover {
-      background: #45a049;
+    #joinButton img {
+      width: 200px;
+      height: auto;
+      transition: transform 0.2s;
+    }
+    #joinButton:hover img {
+      transform: scale(1.05);
     }
     #joinButton:disabled {
-      background: #666;
+      opacity: 0.5;
       cursor: not-allowed;
+    }
+    #joinButton:disabled img {
+      opacity: 0.5;
     }
     #readyButton {
-      padding: 15px 40px;
-      font-size: 1.2em;
-      background: #4CAF50;
-      color: white;
+      background: transparent;
       border: none;
-      border-radius: 5px;
       cursor: pointer;
+      padding: 0;
+      margin: 10px;
     }
-    #readyButton:hover {
-      opacity: 0.9;
+    #readyButton img {
+      width: 200px;
+      height: auto;
+      transition: transform 0.2s;
+    }
+    #readyButton:hover img {
+      transform: scale(1.05);
     }
     #readyButton:disabled {
-      background: #666;
+      opacity: 0.5;
       cursor: not-allowed;
+    }
+    #readyButton:disabled img {
+      opacity: 0.5;
+    }
+    #notReadyButton {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      margin: 10px;
+    }
+    #notReadyButton img {
+      width: 200px;
+      height: auto;
+      transition: transform 0.2s;
+    }
+    #notReadyButton:hover img {
+      transform: scale(1.05);
+    }
+    #returnToLobby img {
+      transition: transform 0.2s;
+    }
+    #returnToLobby:hover img {
+      transform: scale(1.05);
     }
     #gameInfo {
       position: absolute;
@@ -86,6 +156,7 @@
       padding: 15px;
       border-radius: 5px;
       font-size: 14px;
+      pointer-events: all;
     }
     #scoreboard {
       position: absolute;
@@ -96,6 +167,7 @@
       padding: 15px;
       border-radius: 5px;
       font-size: 14px;
+      pointer-events: all;
     }
     .team-score {
       margin: 5px 0;
@@ -108,15 +180,20 @@
   <div id="app"></div>
   <div id="ui">
     <div id="lobby">
-      <h1>Ragetrack</h1>
-      <p>Capture the Flag</p>
-      <button id="joinButton">Join Game</button>
-      <button id="testButton" onclick="console.log('Test button works!'); alert('Button click works!');" style="margin-left: 10px; padding: 10px; background: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer;">Test Click</button>
-      <p id="playerCount" style="margin-top: 20px;">Click "Join Game" to start</p>
-      <p id="connectionStatus" style="margin-top: 10px; font-size: 12px; color: #888;">Not connected</p>
-      <div id="readySection" style="display: none; margin-top: 20px;">
-        <button id="readyButton">Ready</button>
-        <p id="readyStatus" style="margin-top: 10px; font-size: 14px;">Ready: <span id="readyCount">0</span>/<span id="totalPlayers">0</span></p>
+      <div id="lobbyContent">
+        <p>Capture the Flag</p>
+        <div id="lobbyButtons">
+          <button id="joinButton"><img src="/images/joinGameButton.png" alt="Join Game"></button>
+          <!-- Starts a blank editor session (no map loaded) -->
+          <button id="lobbyEditorBtn" class="lobby-secondary-btn">Map Editor</button>
+        </div>
+        <p id="playerCount" style="margin-top: 20px; font-size: 1em; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);">Click "Join Game" to start</p>
+        <p id="connectionStatus" style="margin-top: 10px; font-size: 0.9em; color: #ccc; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);">Not connected</p>
+        <div id="readySection" style="display: none; margin-top: 20px;">
+          <button id="readyButton"><img src="/images/readyButton.png" alt="Ready"></button>
+          <button id="notReadyButton" style="display: none;"><img src="/images/notReadyButton.png" alt="Not Ready"></button>
+          <p id="readyStatus" style="margin-top: 10px; font-size: 1em; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);">Ready: <span id="readyCount">0</span>/<span id="totalPlayers">0</span></p>
+        </div>
       </div>
     </div>
     <div id="gameInfo" style="display: none;">
@@ -133,6 +210,18 @@
     <div id="respawnOverlay" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0, 0, 0, 0.8); padding: 40px; border-radius: 10px; text-align: center; color: white; font-size: 24px;">
       <div style="margin-bottom: 10px;">💀 Eliminated!</div>
       <div>Respawning in <span id="respawnTimer">5</span>s</div>
+    </div>
+    <div id="gameEndOverlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; pointer-events: all;">
+      <div id="victoryBackground" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000 url('/images/victoryBackground.jpeg') center/cover no-repeat; z-index: 1;"></div>
+      <div id="defeatBackground" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000 url('/images/defeatedBackground.png') center/cover no-repeat; z-index: 1;"></div>
+      <div style="position: absolute; top: 65%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; z-index: 1001;">
+        <h1 id="gameEndTitle" style="display: none;"></h1>
+        <p id="gameEndMessage" style="font-size: 1.5em; margin-bottom: 20px; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);"></p>
+        <div id="gameEndScores" style="font-size: 1.2em; margin-bottom: 30px; text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);"></div>
+        <button id="returnToLobby" style="background: transparent; border: none; cursor: pointer; padding: 0;">
+          <img src="/images/backToLobbyButton.png" alt="Back to Lobby" style="width: 200px; height: auto; transition: transform 0.2s;">
+        </button>
+      </div>
     </div>
   </div>
   <script type="module" src="/src/main.js"></script>
