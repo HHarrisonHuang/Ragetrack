@@ -40,7 +40,7 @@ This will start:
 - **Win Condition**: First team to capture 3 flags wins
 - **Elimination**: Falling below the death threshold eliminates you
 - **Respawn**: 5 second delay after elimination
-- **Players**: 4-10 players required to start
+- **Players**: 2-10 players required to start
 
 ## Controls
 
