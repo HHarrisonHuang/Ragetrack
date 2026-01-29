@@ -43,9 +43,11 @@ export class Car {
     // Multiplayer snapshot smoothing (client only renders server state)
     // Use a small snapshot buffer and render slightly "in the past" for smooth big turns.
     this.netHistory = []; // [{ t:number(ms), pos:THREE.Vector3, quat:THREE.Quaternion }]
-    this.netRenderDelayMs = 100;
+    this.netRenderDelayMs = 150; // Increased delay for smoother interpolation
     this.netTimeOffsetMs = null; // localNow - serverNow (smoothed)
     this.netSnapImmediate = true; // snap on first state to avoid starting offset
+    this.netSmoothedPos = null; // Exponential smoothing for position
+    this.netSmoothedQuat = null; // Exponential smoothing for quaternion
     
     // Load visual model asynchronously
     // Use setTimeout to avoid blocking and allow browser to handle extension messages
@@ -161,6 +163,8 @@ export class Car {
         });
         this.tempMesh = new THREE.Mesh(tempGeometry, tempMaterial);
         this.tempMesh.position.copy(this.position);
+        this.tempMesh.position.x -= 1; // Match collider offset: 1 unit left
+        this.tempMesh.position.y += 1; // Match collider offset: 1 unit up
         this.tempMesh.rotation.copy(this.rotation);
         this.tempMesh.visible = true;
         this.tempMesh.renderOrder = 999;
@@ -239,10 +243,14 @@ export class Car {
       const visuals = [this.tempMesh, this.model, this.mesh].filter(Boolean);
       visuals.forEach((obj) => {
         obj.position.copy(this.position);
+        // Apply collider offset to tempMesh only (model has its own offset)
+        if (obj === this.tempMesh) {
+          obj.position.x -= 1; // Match collider offset: 1 unit left
+          obj.position.y += 1; // Match collider offset: 1 unit up
+        }
         obj.quaternion.copy(last.quat);
         obj.updateMatrixWorld?.(true);
       });
-      if (this.helperSphere) this.helperSphere.position.copy(this.position);
       this.netSnapImmediate = false;
     }
   }
@@ -277,14 +285,28 @@ export class Car {
     const interpPos = a.pos.clone().lerp(b.pos, alpha);
     const interpQuat = a.quat.clone().slerp(b.quat, alpha);
 
-    this.position.copy(interpPos);
+    // Apply exponential smoothing to reduce jitter/shaking
+    const smoothingFactor = 0.3; // Lower = smoother but more lag
+    if (this.netSmoothedPos === null) {
+      this.netSmoothedPos = interpPos.clone();
+      this.netSmoothedQuat = interpQuat.clone();
+    } else {
+      this.netSmoothedPos.lerp(interpPos, smoothingFactor);
+      this.netSmoothedQuat.slerp(interpQuat, smoothingFactor);
+    }
+
+    this.position.copy(this.netSmoothedPos);
     const visuals = [this.tempMesh, this.model, this.mesh].filter(Boolean);
     visuals.forEach((obj) => {
-      obj.position.copy(interpPos);
-      obj.quaternion.copy(interpQuat);
+      obj.position.copy(this.netSmoothedPos);
+      // Apply collider offset to tempMesh only (model has its own offset)
+      if (obj === this.tempMesh) {
+        obj.position.x -= 1; // Match collider offset: 1 unit left
+        obj.position.y += 1; // Match collider offset: 1 unit up
+      }
+      obj.quaternion.copy(this.netSmoothedQuat);
       obj.updateMatrixWorld?.(true);
     });
-    if (this.helperSphere) this.helperSphere.position.copy(interpPos);
   }
 
   async createTempMeshFromModel() {
@@ -327,7 +349,8 @@ export class Car {
       });
       this.tempMesh = new THREE.Mesh(tempGeometry, tempMaterial);
       this.tempMesh.position.copy(this.position);
-      // Keep placeholder centered on physics body.
+      this.tempMesh.position.x -= 1; // Match collider offset: 1 unit left
+      this.tempMesh.position.y += 1; // Match collider offset: 1 unit up
       this.tempMesh.rotation.copy(this.rotation);
       this.tempMesh.visible = true;
       this.tempMesh.renderOrder = 999;
@@ -339,14 +362,6 @@ export class Car {
       this.tempMesh.updateMatrixWorld(true);
       
       console.log('📦 Temporary car placeholder created matching model size:', size);
-      
-      // Also add helper sphere for debugging
-      const helperGeometry = new THREE.SphereGeometry(1, 16, 16);
-      const helperMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00, wireframe: true });
-      this.helperSphere = new THREE.Mesh(helperGeometry, helperMaterial);
-      this.helperSphere.position.copy(this.position);
-      this.helperSphere.renderOrder = 1000;
-      this.scene.add(this.helperSphere);
     } catch (error) {
       console.warn('⚠️ Could not load model for tempMesh sizing, using default size:', error);
       // Fallback to default size
@@ -365,6 +380,8 @@ export class Car {
       });
       this.tempMesh = new THREE.Mesh(tempGeometry, tempMaterial);
       this.tempMesh.position.copy(this.position);
+      this.tempMesh.position.x -= 1; // Match collider offset: 1 unit left
+      this.tempMesh.position.y += 1; // Match collider offset: 1 unit up
       this.tempMesh.rotation.copy(this.rotation);
       this.tempMesh.visible = true;
       this.tempMesh.renderOrder = 999;
@@ -536,10 +553,11 @@ export class Car {
     const colliderDesc = RAPIER.ColliderDesc.cuboid(he.x, he.y, he.z)
       .setMass(CAR.MASS)
       .setFriction(0.7)
-      .setRestitution(0.6); // Increased for more bounce
+      .setRestitution(0.6) // Increased for more bounce
+      .setTranslation(-1, 1, 0); // Offset: 1 unit left, 1 unit up
     
     this.collider = world.createCollider(colliderDesc, this.rigidBody);
-    console.log('✅ Physics collider created with half-extents:', he);
+    console.log('✅ Physics collider created with half-extents:', he, 'offset: (-1, 1, 0)');
   }
 
   setInput(throttle, brake, steer) {
@@ -673,9 +691,11 @@ export class Car {
     // tempMesh is updated separately below (it might be the permanent visual)
     
     // Update temporary mesh if it exists (it might be the permanent visual if model failed)
-    // Always update tempMesh position/rotation so it follows the car
+    // Always update tempMesh position/rotation so it follows the car (with collider offset)
     if (this.tempMesh) {
       this.tempMesh.position.copy(this.position);
+      this.tempMesh.position.x -= 1; // Match collider offset: 1 unit left
+      this.tempMesh.position.y += 1; // Match collider offset: 1 unit up
       this.tempMesh.quaternion.copy(quaternion);
       this.tempMesh.updateMatrixWorld(true);
       
@@ -685,10 +705,6 @@ export class Car {
       }
     }
     
-    // Update helper sphere
-    if (this.helperSphere) {
-      this.helperSphere.position.copy(this.position);
-    }
   }
 
   setEliminated(eliminated) {

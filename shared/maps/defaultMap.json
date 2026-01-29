@@ -3,70 +3,44 @@
     {
       "type": "platform",
       "position": [0, 0, 0],
-      "size": [120, 1, 120]
-    },
-    {
-      "type": "platform",
-      "position": [-60, 0, -60],
-      "size": [20, 1, 20]
-    },
-    {
-      "type": "platform",
-      "position": [60, 0, -60],
-      "size": [20, 1, 20]
-    },
-    {
-      "type": "platform",
-      "position": [-60, 0, 60],
-      "size": [20, 1, 20]
-    },
-    {
-      "type": "platform",
-      "position": [60, 0, 60],
-      "size": [20, 1, 20]
+      "size": [100, 1, 40]
     },
     {
       "type": "platform",
       "position": [0, 2, 0],
-      "size": [10, 4, 10]
+      "size": [8, 4, 8]
     }
   ],
+  "bases": {
+    "red": {
+      "position": [-40, 0.6, 0],
+      "size": [15, 0.2, 14]
+    },
+    "blue": {
+      "position": [40, 0.6, 0],
+      "size": [15, 0.2, 14]
+    }
+  },
   "spawnPoints": {
     "red": [
       {
-        "position": [-20, 2, 0],
-        "rotation": [0, 1.5708, 0]
-      },
-      {
-        "position": [-20, 2, -10],
-        "rotation": [0, 1.5708, 0]
-      },
-      {
-        "position": [-20, 2, 10],
+        "position": [-35, 2, 0],
         "rotation": [0, 1.5708, 0]
       }
     ],
     "blue": [
       {
-        "position": [20, 2, 0],
-        "rotation": [0, -1.5708, 0]
-      },
-      {
-        "position": [20, 2, -10],
-        "rotation": [0, -1.5708, 0]
-      },
-      {
-        "position": [20, 2, 10],
+        "position": [35, 2, 0],
         "rotation": [0, -1.5708, 0]
       }
     ]
   },
   "flags": {
     "red": {
-      "position": [-25, 2, 0]
+      "position": [-40, 1, 0]
     },
     "blue": {
-      "position": [25, 2, 0]
+      "position": [40, 1, 0]
     }
   }
 }

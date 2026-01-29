@@ -103,7 +103,8 @@ export class Car {
     const colliderDesc = RAPIER.ColliderDesc.cuboid(he.x, he.y, he.z)
       .setMass(CAR.MASS)
       .setFriction(0.7)
-      .setRestitution(0.6); // Increased for more bounce
+      .setRestitution(0.6) // Increased for more bounce
+      .setTranslation(-1, 1, 0); // Offset: 1 unit left, 1 unit up
     
     this.collider = world.createCollider(colliderDesc, this.rigidBody);
   }

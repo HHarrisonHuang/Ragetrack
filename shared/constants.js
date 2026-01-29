@@ -11,15 +11,15 @@ export const CAR = {
   MASS: 1200,
   ACCELERATION: 1000, // Increased from 30 for faster acceleration
   MAX_SPEED: 4000, // Increased from 50 for higher top speed
-  BRAKE_FORCE: 70,
+  BRAKE_FORCE: 120,
   STEER_FORCE: 0.01, // Reduced for smaller, more controlled turns
   FRICTION: 10,
   FLAG_CARRIER_HANDLING_PENALTY: 0.7, // Reduced handling when carrying flag
   // Server + client must agree on collision shape size.
   // This is a cuboid using HALF-EXTENTS (Rapier cuboid uses half-extents).
-  COLLIDER_HALF_EXTENTS: { x: 2, y: 1, z: 4 },
+  COLLIDER_HALF_EXTENTS: { x: 1.5, y: 1, z: 3 },
   // Visual target full size for car models (used to scale GLBs to match collider).
-  VISUAL_TARGET_SIZE: { x: 4, y: 2, z: 8 },
+  VISUAL_TARGET_SIZE: { x: 3, y: 2, z: 6 },
 };
 
 export const GAME = {

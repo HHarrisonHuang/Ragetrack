@@ -266,6 +266,11 @@ export class Game {
       if (myState && this.car && typeof this.car.applyServerState === 'function') {
         this.car.applyServerState(myState);
         this.car.setEliminated?.(!!myState.eliminated);
+        // Update flag visual on local car
+        if (myState.carryingFlag) {
+          console.log('🚩 Local player carrying flag:', myState.carryingFlag);
+        }
+        this.updateCarFlagVisual(this.car, myState.carryingFlag);
       }
 
       // Update remote players
@@ -291,7 +296,9 @@ export class Game {
         const pos = state.position || [0, 2, 0];
         // Store snapshot history for interpolation (prevents big-turn jitter)
         remote.netHistory = remote.netHistory || [];
-        remote.netRenderDelayMs = remote.netRenderDelayMs ?? 100;
+        remote.netRenderDelayMs = remote.netRenderDelayMs ?? 150;
+        remote.netSmoothedPos = remote.netSmoothedPos || null;
+        remote.netSmoothedQuat = remote.netSmoothedQuat || null;
         const nowLocal = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         const st = Number(state.t);
         const nowServer = (Number.isFinite(st) ? st : ((this.netTimeOffsetMs == null) ? nowLocal : (nowLocal - this.netTimeOffsetMs)));
@@ -302,10 +309,10 @@ export class Game {
         });
         if (remote.netHistory.length > 10) remote.netHistory.splice(0, remote.netHistory.length - 10);
 
-        // Server rotation is a quaternion [x,y,z,w]; support Euler fallback.
-        // (Quaternion is derived during render interpolation)
-
         mesh.visible = !state.eliminated;
+        
+        // Update flag visual on remote player
+        this.updateRemoteFlagVisual(remote, state.carryingFlag);
       });
     };
 
@@ -343,8 +350,124 @@ export class Game {
       this.updateScoreboard(scores);
     });
 
+    this.networkManager.on('flagUpdate', (data) => {
+      this.handleFlagUpdate(data);
+    });
+
     this.networkManager.on('serverDebug', (data) => {
       console.log('🧩 serverDebug:', data);
+    });
+  }
+
+  handleFlagUpdate(data) {
+    const { team, carriedBy, position } = data;
+    console.log(`🚩 Flag update: ${team} flag`, carriedBy ? `carried by ${carriedBy}` : `at base`);
+    
+    if (this.mapLoader) {
+      if (carriedBy) {
+        // Flag is being carried - hide it at the base
+        this.mapLoader.setFlagVisible(team, false);
+      } else if (position) {
+        // Flag returned to base - show it and update position
+        this.mapLoader.setFlagVisible(team, true);
+        this.mapLoader.updateFlagPosition(team, position);
+      }
+    }
+  }
+
+  // Create flag indicator mesh (reusable)
+  createFlagIndicator() {
+    const flagGroup = new THREE.Group();
+    const poleGeo = new THREE.CylinderGeometry(0.15, 0.15, 4, 8);
+    const poleMat = new THREE.MeshStandardMaterial({ color: 0x444444 });
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(0, 2, 0);
+    
+    const bannerGeo = new THREE.PlaneGeometry(2, 1.2);
+    const bannerMat = new THREE.MeshStandardMaterial({ 
+      color: 0xff0000, 
+      side: THREE.DoubleSide,
+      emissive: 0xff0000,
+      emissiveIntensity: 0.6
+    });
+    const banner = new THREE.Mesh(bannerGeo, bannerMat);
+    banner.position.set(1, 3.4, 0);
+    
+    flagGroup.add(pole);
+    flagGroup.add(banner);
+    flagGroup.visible = false;
+    
+    return { flagGroup, banner };
+  }
+
+  // Update flag visual on local player's car
+  updateCarFlagVisual(car, carryingFlag) {
+    if (!car) return;
+    
+    // Get or create flag indicator mesh - add to scene, update position in render loop
+    if (!car.flagIndicator) {
+      const { flagGroup, banner } = this.createFlagIndicator();
+      car.flagIndicator = flagGroup;
+      car.flagBanner = banner;
+      car.carryingFlagTeam = null;
+      this.scene.add(flagGroup);
+    }
+    
+    car.carryingFlagTeam = carryingFlag;
+    
+    if (carryingFlag) {
+      // Show flag with correct color
+      const color = carryingFlag === 'red' ? 0xff0000 : 0x0000ff;
+      car.flagBanner.material.color.setHex(color);
+      car.flagBanner.material.emissive.setHex(color);
+      car.flagIndicator.visible = true;
+    } else {
+      car.flagIndicator.visible = false;
+    }
+  }
+
+  // Update flag visual on remote players
+  updateRemoteFlagVisual(remote, carryingFlag) {
+    if (!remote) return;
+    
+    // Get or create flag indicator mesh - add to scene, update position in render loop
+    if (!remote.flagIndicator) {
+      const { flagGroup, banner } = this.createFlagIndicator();
+      remote.flagIndicator = flagGroup;
+      remote.flagBanner = banner;
+      remote.carryingFlagTeam = null;
+      this.scene.add(flagGroup);
+    }
+    
+    remote.carryingFlagTeam = carryingFlag;
+    
+    if (carryingFlag) {
+      // Show flag with correct color
+      const color = carryingFlag === 'red' ? 0xff0000 : 0x0000ff;
+      remote.flagBanner.material.color.setHex(color);
+      remote.flagBanner.material.emissive.setHex(color);
+      remote.flagIndicator.visible = true;
+    } else {
+      remote.flagIndicator.visible = false;
+    }
+  }
+
+  // Update flag positions to follow cars (called in render loop)
+  updateFlagIndicatorPositions() {
+    // Update local car's flag position
+    if (this.car && this.car.flagIndicator && this.car.carryingFlagTeam) {
+      const carPos = this.car.position || (this.car.tempMesh ? this.car.tempMesh.position : null);
+      if (carPos) {
+        this.car.flagIndicator.position.set(carPos.x, carPos.y + 2, carPos.z);
+      }
+    }
+    
+    // Update remote players' flag positions
+    this.remotePlayers.forEach((remote) => {
+      if (remote.flagIndicator && remote.carryingFlagTeam && remote.mesh) {
+        const meshPos = remote.mesh.position;
+        remote.flagIndicator.position.set(meshPos.x, meshPos.y + 2, meshPos.z);
+      }
     });
   }
 
@@ -609,9 +732,30 @@ export class Game {
     this.isMultiplayer = true;
     
     // Load map
-    console.log('📦 Loading map:', data.map || 'defaultMap.json');
-    this.mapLoader.loadMap(data.map || 'defaultMap.json').then((mapData) => {
+    const mapName = data.map || 'defaultMap.json';
+    console.log('📦 Loading map:', mapName);
+    console.log('📦 Scene children BEFORE loading map:', this.scene.children.length);
+    
+    this.mapLoader.loadMap(mapName).then((mapData) => {
       console.log('✅ Map loaded:', mapData);
+      console.log('📦 Scene children AFTER loading map:', this.scene.children.length);
+      console.log('🚩 Flags after map load:', { 
+        red: !!this.mapLoader.flags.red, 
+        blue: !!this.mapLoader.flags.blue 
+      });
+      
+      // Debug: List all flags in scene
+      let flagCount = 0;
+      this.scene.traverse((obj) => {
+        if (obj.userData && obj.userData.isFlag) {
+          flagCount++;
+          const worldPos = new THREE.Vector3();
+          obj.getWorldPosition(worldPos);
+          console.log(`🚩 Flag in scene after load: team=${obj.userData.team}, pos=`, worldPos);
+        }
+      });
+      console.log(`🚩 Total flags in scene: ${flagCount}`);
+      
       document.getElementById('lobby').style.display = 'none';
       document.getElementById('gameInfo').style.display = 'block';
       document.getElementById('scoreboard').style.display = 'block';
@@ -619,6 +763,8 @@ export class Game {
       console.error('❌ Failed to load map:', error);
       // Try loading default map
       this.mapLoader.loadDefaultMap().then(() => {
+        console.log('📦 Default map loaded as fallback');
+        console.log('📦 Scene children after fallback:', this.scene.children.length);
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('gameInfo').style.display = 'block';
         document.getElementById('scoreboard').style.display = 'block';
@@ -660,6 +806,8 @@ export class Game {
   handleElimination() {
     if (this.car) {
       this.car.setEliminated(true);
+      // Hide flag indicator when eliminated
+      this.updateCarFlagVisual(this.car, null);
     }
     
     // Show respawn overlay with countdown
@@ -739,7 +887,7 @@ export class Game {
             const span = (b.t - a.t);
             if (span > 0.0001) alpha = Math.max(0, Math.min(1, (renderT - a.t) / span));
 
-            const pos = a.pos.clone().lerp(b.pos, alpha);
+            const interpPos = a.pos.clone().lerp(b.pos, alpha);
 
             const qa = new THREE.Quaternion();
             const qb = new THREE.Quaternion();
@@ -750,10 +898,20 @@ export class Game {
             if (Array.isArray(rb) && rb.length === 4) qb.set(rb[0], rb[1], rb[2], rb[3]);
             else if (Array.isArray(rb) && rb.length >= 3) qb.setFromEuler(new THREE.Euler(rb[0], rb[1], rb[2]));
 
-            const q = qa.slerp(qb, alpha);
+            const interpQuat = qa.slerp(qb, alpha);
 
-            remote.mesh.position.copy(pos);
-            remote.mesh.quaternion.copy(q);
+            // Apply exponential smoothing to reduce jitter/shaking
+            const smoothingFactor = 0.3; // Lower = smoother but more lag
+            if (!remote.netSmoothedPos) {
+              remote.netSmoothedPos = interpPos.clone();
+              remote.netSmoothedQuat = interpQuat.clone();
+            } else {
+              remote.netSmoothedPos.lerp(interpPos, smoothingFactor);
+              remote.netSmoothedQuat.slerp(interpQuat, smoothingFactor);
+            }
+
+            remote.mesh.position.copy(remote.netSmoothedPos);
+            remote.mesh.quaternion.copy(remote.netSmoothedQuat);
           });
         }
         
@@ -761,6 +919,8 @@ export class Game {
         if (this.car.position.y < DEATH_THRESHOLD) {
           if (!this.car.isEliminated) {
             this.car.setEliminated(true);
+            // Hide flag indicator when falling
+            this.updateCarFlagVisual(this.car, null);
             if (this.networkManager) {
               this.networkManager.sendFall();
             }
@@ -796,6 +956,9 @@ export class Game {
       if (this.renderer && this.scene && this.camera) {
         try {
           this.renderer.render(this.scene, this.camera);
+          
+          // Update flag indicator positions to follow cars
+          this.updateFlagIndicatorPositions();
           
           // Debug: Log scene children count occasionally
           if (Math.floor(time / 2000) !== Math.floor((time - deltaTime * 1000) / 2000)) {

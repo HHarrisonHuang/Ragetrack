@@ -131,6 +131,11 @@ export class NetworkManager extends EventEmitter {
     this.socket.on('scoreUpdate', (scores) => {
       this.emit('scoreUpdate', scores);
     });
+
+    this.socket.on('flagUpdate', (data) => {
+      console.log('🚩 Received flagUpdate from server:', data);
+      this.emit('flagUpdate', data);
+    });
   }
 
   joinGame() {

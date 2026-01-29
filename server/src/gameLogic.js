@@ -142,10 +142,19 @@ export class GameServer {
   }
 
   initializeFlags() {
-    if (!this.mapData || !this.mapData.flags) return;
+    if (!this.mapData || !this.mapData.flags) {
+      console.log('⚠️ No flags in map data');
+      return;
+    }
     
-    this.flags.red.position = this.mapData.flags.red.position;
-    this.flags.blue.position = this.mapData.flags.blue.position;
+    this.flags.red.position = [...this.mapData.flags.red.position];
+    this.flags.blue.position = [...this.mapData.flags.blue.position];
+    this.flags.red.carriedBy = null;
+    this.flags.blue.carriedBy = null;
+    console.log('🚩 Flags initialized:', {
+      red: this.flags.red.position,
+      blue: this.flags.blue.position
+    });
   }
 
   handleConnection(socket) {
@@ -364,12 +373,16 @@ export class GameServer {
     const playerId = this.players.get(socketId);
     if (!playerId) return;
     
-    const result = this.playerManager.eliminatePlayer(playerId);
+    // Always check if player was carrying a flag and drop it
+    const wasCarryingRedFlag = this.flags.red.carriedBy === playerId;
+    const wasCarryingBlueFlag = this.flags.blue.carriedBy === playerId;
     
-    if (result && result.droppedFlag) {
+    if (wasCarryingRedFlag || wasCarryingBlueFlag) {
+      console.log(`🚩 Player ${playerId} died while carrying flag, returning it`);
       this.handleFlagDrop(playerId);
     }
     
+    this.playerManager.eliminatePlayer(playerId);
     this.io.to(socketId).emit('eliminated', {});
   }
 
@@ -391,10 +404,18 @@ export class GameServer {
       (playerPos.z - flag.position[2]) ** 2
     );
     
-    if (distance < 3) { // Pickup radius
+    if (distance < 5) { // Pickup radius
       player.hasFlag = true;
       flag.carriedBy = playerId;
       player.car.hasFlag = true;
+      
+      // Broadcast flag pickup
+      this.io.emit('flagUpdate', {
+        team: flagTeam,
+        carriedBy: playerId,
+        position: null, // Flag is being carried, not at a position
+      });
+      console.log(`🚩 ${playerId} picked up ${flagTeam} flag!`);
       return true;
     }
     
@@ -403,7 +424,7 @@ export class GameServer {
 
   handleFlagDrop(playerId) {
     const player = this.playerManager.getPlayer(playerId);
-    if (!player || !player.hasFlag) return;
+    if (!player) return;
     
     // Find which flag they're carrying
     let flagTeam = null;
@@ -414,11 +435,23 @@ export class GameServer {
     }
     
     if (flagTeam) {
-      player.hasFlag = false;
-      player.car.hasFlag = false;
+      if (player.hasFlag) {
+        player.hasFlag = false;
+      }
+      if (player.car) {
+        player.car.hasFlag = false;
+      }
       this.flags[flagTeam].carriedBy = null;
       // Flag returns to base
-      this.flags[flagTeam].position = this.mapData.flags[flagTeam].position;
+      this.flags[flagTeam].position = [...this.mapData.flags[flagTeam].position];
+      
+      // Broadcast flag return
+      this.io.emit('flagUpdate', {
+        team: flagTeam,
+        carriedBy: null,
+        position: this.flags[flagTeam].position,
+      });
+      console.log(`🚩 ${flagTeam} flag returned to base!`);
     }
   }
 
@@ -432,31 +465,44 @@ export class GameServer {
     
     if (flag.carriedBy !== playerId) return false;
     
-    // Check if at base (simplified - check distance to base spawn)
-    const baseSpawns = this.mapData.spawnPoints[player.team];
-    if (!baseSpawns || baseSpawns.length === 0) return false;
+    // Check if at own base (use bases field if available, otherwise spawn points)
+    let basePos;
+    if (this.mapData.bases && this.mapData.bases[player.team]) {
+      basePos = this.mapData.bases[player.team].position;
+    } else {
+      const baseSpawns = this.mapData.spawnPoints[player.team];
+      if (!baseSpawns || baseSpawns.length === 0) return false;
+      basePos = baseSpawns[0].position;
+    }
     
-    const basePos = baseSpawns[0].position;
     const playerPos = player.car.getPosition();
     const distance = Math.sqrt(
       (playerPos.x - basePos[0]) ** 2 +
-      (playerPos.y - basePos[1]) ** 2 +
-      (playerPos.z - basePos[2]) ** 2
+      (playerPos.z - basePos[2]) ** 2  // Only check X and Z (horizontal distance)
     );
     
-    if (distance < 5) { // Capture radius
+    if (distance < 10) { // Capture radius (must be in own base area)
       // Score!
       this.scores[player.team]++;
+      console.log(`🏆 ${player.team} team scored! Score: Red ${this.scores.red} - Blue ${this.scores.blue}`);
       
       // Reset flag
-      this.handleFlagDrop(playerId);
-      this.flags[enemyTeam].position = this.mapData.flags[enemyTeam].position;
+      player.hasFlag = false;
+      player.car.hasFlag = false;
+      flag.carriedBy = null;
+      flag.position = [...this.mapData.flags[enemyTeam].position];
+      
+      // Broadcast flag return and score
+      this.io.emit('flagUpdate', {
+        team: enemyTeam,
+        carriedBy: null,
+        position: flag.position,
+      });
+      this.io.emit('scoreUpdate', this.scores);
       
       // Check win condition
       if (this.scores[player.team] >= GAME.WIN_SCORE) {
         this.endGame(player.team);
-      } else {
-        this.io.emit('scoreUpdate', this.scores);
       }
       
       return true;
@@ -531,6 +577,15 @@ export class GameServer {
         
         // Update players (pass io for respawn broadcasts)
         this.playerManager.update(deltaTime, this.mapData, this.io);
+
+        // If a player gets eliminated by server-side physics (falling), ensure any carried flag
+        // returns immediately. (PlayerManager can eliminate without going through handlePlayerFall.)
+        this.playerManager.getAllPlayers().forEach((player) => {
+          if (!player?.eliminated) return;
+          if (this.flags.red.carriedBy === player.id || this.flags.blue.carriedBy === player.id) {
+            this.handleFlagDrop(player.id);
+          }
+        });
         
         // Check flag interactions
         this.playerManager.getAllPlayers().forEach((player) => {
@@ -544,14 +599,21 @@ export class GameServer {
           this.checkFlagCapture(player.id);
         });
         
-        // Broadcast player states
+        // Broadcast player states with flag info
         const playerStates = this.playerManager.getPlayerStates();
         const t = this.serverTickMs;
-        Object.values(playerStates).forEach((s) => {
+        Object.entries(playerStates).forEach(([playerId, s]) => {
           s.t = t;
+          // Add flag carrier info
+          if (this.flags.red.carriedBy === playerId) {
+            s.carryingFlag = 'red';
+          } else if (this.flags.blue.carriedBy === playerId) {
+            s.carryingFlag = 'blue';
+          } else {
+            s.carryingFlag = null;
+          }
         });
         this.io.emit('playerUpdate', playerStates);
-        // Minimal-style multiplayer event: one authoritative snapshot for everyone
         this.io.emit('snapshot', playerStates);
       }
     }, interval);
