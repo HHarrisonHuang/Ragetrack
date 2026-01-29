@@ -100,6 +100,21 @@ export class NetworkManager extends EventEmitter {
     this.socket.on('playerUpdate', (update) => {
       this.emit('playerUpdate', update);
     });
+    
+    // Minimal-style authoritative snapshot (same payload as playerUpdate)
+    this.socket.on('snapshot', (snapshot) => {
+      this.emit('snapshot', snapshot);
+    });
+    
+    this.socket.on('serverDebug', (data) => {
+      // Log here so it shows even if Game didn't subscribe yet.
+      try {
+        console.log('🧩 serverDebug (raw):', JSON.stringify(data));
+      } catch {
+        console.log('🧩 serverDebug (raw):', data);
+      }
+      this.emit('serverDebug', data);
+    });
 
     this.socket.on('eliminated', (data) => {
       this.emit('eliminated', data);
@@ -175,6 +190,8 @@ export class NetworkManager extends EventEmitter {
 
   sendInput(inputState) {
     if (this.socket && this.connected) {
+      // Prefer minimal-style event name, but keep legacy for compatibility.
+      this.socket.emit('input', inputState);
       this.socket.emit('playerInput', inputState);
     }
   }

@@ -158,7 +158,8 @@ export class PlayerManager {
       const rotation = player.car.getRotation();
       states[player.id] = {
         position: [position.x, position.y, position.z],
-        rotation: [rotation.x, rotation.y, rotation.z],
+        // Server rotation is a quaternion (x, y, z, w)
+        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
         team: player.team, // Include team in state updates
         hasFlag: player.hasFlag,
         eliminated: player.eliminated,

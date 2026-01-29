@@ -21,6 +21,12 @@ export class GameServer {
     this.waitingPlayers = new Set();
     this.readyPlayers = new Set(); // socketId -> ready state
     this.mapData = null;
+    this.mapCollidersCreated = false;
+    this.mapCollidersPromise = null;
+    this.lastDebug = {
+      mapColliders: null,
+      startGameWorld: null,
+    };
     
     this.scores = { red: 0, blue: 0 };
     this.flags = {
@@ -30,6 +36,10 @@ export class GameServer {
     
     this.lastUpdate = Date.now();
     this.gameLoopInterval = null;
+
+    // Server clock for snapshot interpolation (monotonic, based on tick rate)
+    this.serverTick = 0;
+    this.serverTickMs = 0;
     
     // Start game loop
     this.startGameLoop();
@@ -37,10 +47,29 @@ export class GameServer {
 
   setMap(mapData) {
     this.mapData = mapData;
-    this.createMapColliders().catch(err => {
-      console.error('Error creating map colliders:', err);
-    });
+    this.mapCollidersCreated = false;
+    this.mapCollidersPromise = this.createMapColliders()
+      .then(() => {
+        this.mapCollidersCreated = true;
+      })
+      .catch((err) => {
+        console.error('Error creating map colliders:', err);
+        this.mapCollidersCreated = false;
+      });
     this.initializeFlags();
+  }
+
+  async ensureMapReady() {
+    // Make sure physics + colliders exist before spawning cars.
+    if (!this.physicsWorld.rapierLoaded) {
+      await this.physicsWorld.init();
+    }
+    if (this.mapCollidersPromise) {
+      await this.mapCollidersPromise;
+    } else if (!this.mapCollidersCreated) {
+      await this.createMapColliders();
+      this.mapCollidersCreated = true;
+    }
   }
 
   async createMapColliders() {
@@ -74,8 +103,42 @@ export class GameServer {
         block.size[1] / 2,
         block.size[2] / 2
       );
+      
+      // Set physics properties based on block type
+      if (block.type === 'obstacle') {
+        // Obstacles: solid collisions like real life - cars hit and stop/bounce realistically
+        colliderDesc.setFriction(0.5); // Moderate friction - cars can slide but also grip
+        colliderDesc.setRestitution(0.5); // Higher bounciness - cars bounce back further
+      } else {
+        // Platforms: lower friction to prevent sticking, especially for vertical surfaces
+        // If platform is tall (height > 1), treat it more like an obstacle
+        const isTallBlock = block.size[1] > 1;
+        if (isTallBlock) {
+          colliderDesc.setFriction(0.3); // Lower friction for tall blocks - cars slide off
+          colliderDesc.setRestitution(0.5); // Higher bounce for tall blocks - cars bounce back further
+        } else {
+          // Flat platforms: normal friction for driving
+          colliderDesc.setFriction(0.7);
+          colliderDesc.setRestitution(0.1);
+        }
+      }
+      
       world.createCollider(colliderDesc, body);
     });
+
+    // Debug: verify colliders are actually created in the active world.
+    try {
+      const info = {
+        bodies: typeof world?.bodies?.len === 'function' ? world.bodies.len() : 'n/a',
+        colliders: typeof world?.colliders?.len === 'function' ? world.colliders.len() : 'n/a',
+      };
+      console.log('🧱 Map colliders created:', info);
+      this.lastDebug.mapColliders = info;
+      // Also send to clients so it’s visible in the browser console.
+      this.io?.emit?.('serverDebug', { type: 'mapColliders', ...info });
+    } catch (e) {
+      console.warn('Map collider count debug failed:', e?.message);
+    }
   }
 
   initializeFlags() {
@@ -87,6 +150,30 @@ export class GameServer {
 
   handleConnection(socket) {
     // Player connects but hasn't joined game yet
+    // Always send a debug ping so we know the client is receiving serverDebug.
+    try {
+      const world = this.physicsWorld.getWorld();
+      socket.emit('serverDebug', {
+        type: 'connectPing',
+        rapierLoaded: !!this.physicsWorld.rapierLoaded,
+        hasWorld: !!world,
+        mapSet: !!this.mapData,
+        mapBlocks: this.mapData?.blocks?.length ?? 0,
+        bodies: typeof world?.bodies?.len === 'function' ? world.bodies.len() : 'n/a',
+        colliders: typeof world?.colliders?.len === 'function' ? world.colliders.len() : 'n/a',
+      });
+
+      // If map colliders were created before this client connected, resend that info too.
+      if (this.lastDebug.mapColliders) {
+        socket.emit('serverDebug', { type: 'mapColliders', ...this.lastDebug.mapColliders });
+      }
+      if (this.lastDebug.startGameWorld) {
+        socket.emit('serverDebug', { type: 'startGameWorld', ...this.lastDebug.startGameWorld });
+      }
+    } catch (e) {
+      // If even this fails, at least tell the client something.
+      socket.emit('serverDebug', { type: 'connectPingError', message: e?.message || String(e) });
+    }
   }
 
   handleDisconnection(socketId) {
@@ -163,14 +250,31 @@ export class GameServer {
         this.readyPlayers.size === this.waitingPlayers.size &&
         this.readyPlayers.size > 0) {
       console.log(`All players ready! Starting game...`);
-      this.startGame();
+      this.startGame().catch((err) => console.error('startGame failed:', err));
     }
   }
 
-  startGame() {
+  async startGame() {
     if (!this.mapData) {
       console.error('Cannot start game: no map loaded');
       return;
+    }
+
+    // CRITICAL: ensure map colliders exist BEFORE spawning.
+    await this.ensureMapReady();
+
+    // Debug: confirm world still has colliders at game start.
+    try {
+      const world = this.physicsWorld.getWorld();
+      const info = {
+        bodies: typeof world?.bodies?.len === 'function' ? world.bodies.len() : 'n/a',
+        colliders: typeof world?.colliders?.len === 'function' ? world.colliders.len() : 'n/a',
+      };
+      console.log('🎮 startGame physics world:', info);
+      this.lastDebug.startGameWorld = info;
+      this.io?.emit?.('serverDebug', { type: 'startGameWorld', ...info });
+    } catch (e) {
+      console.warn('startGame collider count debug failed:', e?.message);
     }
 
     this.gameState = 'waiting';
@@ -417,6 +521,9 @@ export class GameServer {
       const now = Date.now();
       const deltaTime = (now - this.lastUpdate) / 1000;
       this.lastUpdate = now;
+
+      this.serverTick += 1;
+      this.serverTickMs += interval;
       
       if (this.gameState === 'playing') {
         // Update physics
@@ -439,7 +546,13 @@ export class GameServer {
         
         // Broadcast player states
         const playerStates = this.playerManager.getPlayerStates();
+        const t = this.serverTickMs;
+        Object.values(playerStates).forEach((s) => {
+          s.t = t;
+        });
         this.io.emit('playerUpdate', playerStates);
+        // Minimal-style multiplayer event: one authoritative snapshot for everyone
+        this.io.emit('snapshot', playerStates);
       }
     }, interval);
   }

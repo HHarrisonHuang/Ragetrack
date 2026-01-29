@@ -1,27 +1,12 @@
 import { PHYSICS } from '../../shared/constants.js';
-import { initRapier, getRAPIER } from './rapierWrapper.js';
+import RAPIER from '@dimforge/rapier3d-compat';
 
-let RAPIER = null;
-let rapierPromise = null;
-
-async function loadRapier() {
-  if (!rapierPromise) {
-    try {
-      // Initialize the WASM module
-      await initRapier();
-      
-      // Get the RAPIER wrapper
-      RAPIER = getRAPIER();
-      
-      rapierPromise = Promise.resolve(RAPIER);
-    } catch (error) {
-      console.error('Failed to load Rapier:', error);
-      throw new Error('Could not load Rapier physics engine. Error: ' + error.message);
-    }
-  } else {
-    RAPIER = await rapierPromise;
+let rapierInitPromise = null;
+async function ensureRapierInit() {
+  if (!rapierInitPromise) {
+    rapierInitPromise = RAPIER.init();
   }
-  return RAPIER;
+  await rapierInitPromise;
 }
 
 export class PhysicsWorld {
@@ -33,7 +18,14 @@ export class PhysicsWorld {
   }
 
   async init() {
-    await loadRapier();
+    // IMPORTANT: init() can be called from multiple places (server bootstrap + GameServer).
+    // Creating a new RAPIER.World here would wipe existing colliders/bodies and cause cars
+    // to fall through the floor. So make init() idempotent.
+    if (this.rapierLoaded && this.world) {
+      return;
+    }
+
+    await ensureRapierInit();
     
     this.gravity = new RAPIER.Vector3(
       PHYSICS.GRAVITY.x,
@@ -41,6 +33,8 @@ export class PhysicsWorld {
       PHYSICS.GRAVITY.z
     );
     this.world = new RAPIER.World(this.gravity);
+    // Ensure the world uses our fixed timestep.
+    this.world.timestep = PHYSICS.FIXED_TIMESTEP;
     this.accumulator = 0;
     this.rapierLoaded = true;
   }
@@ -56,6 +50,8 @@ export class PhysicsWorld {
     this.accumulator += deltaTime;
 
     while (this.accumulator >= PHYSICS.FIXED_TIMESTEP) {
+      // Keep timestep consistent even if something modified it.
+      this.world.timestep = PHYSICS.FIXED_TIMESTEP;
       this.world.step();
       this.accumulator -= PHYSICS.FIXED_TIMESTEP;
     }

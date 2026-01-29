@@ -39,6 +39,13 @@ export class Car {
     // tempMesh will be created in createTempMeshFromModel()
     this.tempMesh = null;
     this.helperSphere = null;
+
+    // Multiplayer snapshot smoothing (client only renders server state)
+    // Use a small snapshot buffer and render slightly "in the past" for smooth big turns.
+    this.netHistory = []; // [{ t:number(ms), pos:THREE.Vector3, quat:THREE.Quaternion }]
+    this.netRenderDelayMs = 100;
+    this.netTimeOffsetMs = null; // localNow - serverNow (smoothed)
+    this.netSnapImmediate = true; // snap on first state to avoid starting offset
     
     // Load visual model asynchronously
     // Use setTimeout to avoid blocking and allow browser to handle extension messages
@@ -171,6 +178,115 @@ export class Car {
     }, 100); // Small delay to let browser extensions settle
   }
 
+  /**
+   * Apply an authoritative server state (minimal multiplayer style).
+   * Expected shape:
+   * - state.position: [x, y, z]
+   * - state.rotation: [x, y, z, w] quaternion (preferred) OR [x, y, z] Euler fallback
+   */
+  applyServerState(state) {
+    if (!state) return;
+
+    const pos = state.position;
+    let nextPos = null;
+    if (Array.isArray(pos) && pos.length >= 3) {
+      const x = Number(pos[0]);
+      const y = Number(pos[1]);
+      const z = Number(pos[2]);
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        nextPos = new THREE.Vector3(x, y, z);
+      }
+    }
+
+    let q = null;
+    const rot = state.rotation;
+    if (Array.isArray(rot) && rot.length === 4) {
+      const x = Number(rot[0]);
+      const y = Number(rot[1]);
+      const z = Number(rot[2]);
+      const w = Number(rot[3]);
+      if ([x, y, z, w].every(Number.isFinite)) {
+        q = new THREE.Quaternion(x, y, z, w);
+      }
+    } else if (Array.isArray(rot) && rot.length >= 3) {
+      // Fallback: treat as Euler (x, y, z)
+      const ex = Number(rot[0]) || 0;
+      const ey = Number(rot[1]) || 0;
+      const ez = Number(rot[2]) || 0;
+      const euler = new THREE.Euler(ex, ey, ez);
+      q = new THREE.Quaternion().setFromEuler(euler);
+    }
+
+    // Push into snapshot history (timestamped)
+    if (nextPos && q) {
+      const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const st = Number(state.t);
+      if (Number.isFinite(st)) {
+        const estOffset = now - st;
+        this.netTimeOffsetMs = (this.netTimeOffsetMs == null) ? estOffset : (this.netTimeOffsetMs * 0.9 + estOffset * 0.1);
+        this.netHistory.push({ t: st, pos: nextPos, quat: q });
+      } else {
+        // Fallback (no server timestamp): use local receipt time
+        this.netHistory.push({ t: now, pos: nextPos, quat: q });
+      }
+      if (this.netHistory.length > 10) this.netHistory.splice(0, this.netHistory.length - 10);
+    }
+
+    // On first snapshot, snap immediately so camera + visuals don't start offset.
+    if (this.netHistory.length > 0 && this.netSnapImmediate) {
+      const last = this.netHistory[this.netHistory.length - 1];
+      this.position.copy(last.pos);
+      const visuals = [this.tempMesh, this.model, this.mesh].filter(Boolean);
+      visuals.forEach((obj) => {
+        obj.position.copy(this.position);
+        obj.quaternion.copy(last.quat);
+        obj.updateMatrixWorld?.(true);
+      });
+      if (this.helperSphere) this.helperSphere.position.copy(this.position);
+      this.netSnapImmediate = false;
+    }
+  }
+
+  /**
+   * Smoothly move visuals toward latest server snapshot.
+   * Call every animation frame while in multiplayer.
+   */
+  interpolateFromNetwork(deltaTime) {
+    if (!this.netHistory || this.netHistory.length === 0) return;
+
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const serverNow = (this.netTimeOffsetMs == null) ? now : (now - this.netTimeOffsetMs);
+    const renderT = serverNow - (this.netRenderDelayMs || 0);
+
+    // Find snapshots surrounding renderT
+    let a = null;
+    let b = null;
+    for (let i = 0; i < this.netHistory.length; i++) {
+      const s = this.netHistory[i];
+      if (s.t <= renderT) a = s;
+      if (s.t >= renderT) { b = s; break; }
+    }
+
+    if (!a) a = this.netHistory[0];
+    if (!b) b = this.netHistory[this.netHistory.length - 1];
+
+    let alpha = 0;
+    const span = (b.t - a.t);
+    if (span > 0.0001) alpha = Math.max(0, Math.min(1, (renderT - a.t) / span));
+
+    const interpPos = a.pos.clone().lerp(b.pos, alpha);
+    const interpQuat = a.quat.clone().slerp(b.quat, alpha);
+
+    this.position.copy(interpPos);
+    const visuals = [this.tempMesh, this.model, this.mesh].filter(Boolean);
+    visuals.forEach((obj) => {
+      obj.position.copy(interpPos);
+      obj.quaternion.copy(interpQuat);
+      obj.updateMatrixWorld?.(true);
+    });
+    if (this.helperSphere) this.helperSphere.position.copy(interpPos);
+  }
+
   async createTempMeshFromModel() {
     // Quickly load the model just to get its dimensions
     try {
@@ -186,20 +302,22 @@ export class Car {
         );
       });
       
-      // Get model dimensions
+      // Get model dimensions (unscaled)
       const box = new THREE.Box3().setFromObject(gltf.scene);
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       
       console.log('📐 Model dimensions:', size, 'center:', center);
       
-      // Store model dimensions for physics creation
+      // Store model dimensions (unscaled) for later scaling
       this.modelSize = size;
       this.modelCenter = center;
       
       // Create tempMesh matching model dimensions
       const teamColor = this.team === 'blue' ? 0x0000ff : 0xff0000;
-      const tempGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+      // Make tempMesh match the *final* desired collision size (server+client agreement).
+      const tgt = CAR.VISUAL_TARGET_SIZE || { x: 4, y: 2, z: 8 };
+      const tempGeometry = new THREE.BoxGeometry(tgt.x, tgt.y, tgt.z);
       const tempMaterial = new THREE.MeshBasicMaterial({ 
         color: teamColor, 
         wireframe: false,
@@ -209,10 +327,7 @@ export class Car {
       });
       this.tempMesh = new THREE.Mesh(tempGeometry, tempMaterial);
       this.tempMesh.position.copy(this.position);
-      // Adjust position to account for model center offset
-      if (center.length() > 0.01) {
-        this.tempMesh.position.sub(center);
-      }
+      // Keep placeholder centered on physics body.
       this.tempMesh.rotation.copy(this.rotation);
       this.tempMesh.visible = true;
       this.tempMesh.renderOrder = 999;
@@ -235,11 +350,12 @@ export class Car {
     } catch (error) {
       console.warn('⚠️ Could not load model for tempMesh sizing, using default size:', error);
       // Fallback to default size
-      this.modelSize = new THREE.Vector3(4, 2, 6); // Default car-like size
+      this.modelSize = new THREE.Vector3(4, 2, 8); // Default car-like size (matches VISUAL_TARGET_SIZE)
       this.modelCenter = new THREE.Vector3(0, 0, 0);
       
       const teamColor = this.team === 'blue' ? 0x0000ff : 0xff0000;
-      const tempGeometry = new THREE.BoxGeometry(this.modelSize.x, this.modelSize.y, this.modelSize.z);
+      const tgt = CAR.VISUAL_TARGET_SIZE || { x: this.modelSize.x, y: this.modelSize.y, z: this.modelSize.z };
+      const tempGeometry = new THREE.BoxGeometry(tgt.x, tgt.y, tgt.z);
       const tempMaterial = new THREE.MeshBasicMaterial({ 
         color: teamColor, 
         wireframe: false,
@@ -306,17 +422,11 @@ export class Car {
       console.log('  - Model bounding box size:', size);
       console.log('  - Model center:', center);
       
-      // Scale and position the model
-      // Adjust scale if needed based on your model
-      // If model is very small or very large, adjust scale
-      let scale = 1;
-      if (size.length() < 0.1) {
-        scale = 10; // Model is very small, scale up
-        console.log('  - Model is very small, scaling up by 10x');
-      } else if (size.length() > 100) {
-        scale = 0.1; // Model is very large, scale down
-        console.log('  - Model is very large, scaling down by 0.1x');
-      }
+      // Scale model so it matches the collision box size (server + client agree).
+      // Use the Z length as reference (car length).
+      const tgt = CAR.VISUAL_TARGET_SIZE || { x: 4, y: 2, z: 8 };
+      const baseLen = Math.max(0.0001, size.z);
+      const scale = tgt.z / baseLen;
       this.model.scale.set(scale, scale, scale);
       
       // Center the model if it's offset
@@ -355,13 +465,7 @@ export class Car {
       console.log('  - TempMesh still exists:', !!this.tempMesh);
       console.log('  - TempMesh visible:', this.tempMesh?.visible);
       
-      // If model is very small, scale it up more
-      if (finalSize.length() < 0.5) {
-        const additionalScale = 5 / finalSize.length(); // Scale to at least 5 units
-        this.model.scale.multiplyScalar(additionalScale);
-        console.log(`  - ⚠️ Model is very small (${finalSize.length().toFixed(2)}), scaling up by ${additionalScale.toFixed(2)}x`);
-        console.log('  - New scale:', this.model.scale);
-      }
+      // Keep model scale driven by VISUAL_TARGET_SIZE so it matches collider.
       
       // Check if model is visible
       let hasVisibleMeshes = false;
@@ -404,41 +508,38 @@ export class Car {
     const world = this.physicsWorld.getWorld();
     
     // Create rigid body
+    // IMPORTANT: Rapier expects a quaternion; our car stores Euler angles.
+    const initialQuat = new THREE.Quaternion().setFromEuler(this.rotation);
     const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(this.position.x, this.position.y, this.position.z)
       .setRotation({
-        x: this.rotation.x,
-        y: this.rotation.y,
-        z: this.rotation.z,
-        w: 1,
+        x: initialQuat.x,
+        y: initialQuat.y,
+        z: initialQuat.z,
+        w: initialQuat.w,
       });
     
     this.rigidBody = world.createRigidBody(rigidBodyDesc);
     
-    // Create collider matching model dimensions
-    // Use model dimensions if available, otherwise use default
-    let colliderSize;
-    if (this.modelSize) {
-      // Use half-extents (Rapier cuboid uses half-extents)
-      colliderSize = {
-        x: this.modelSize.x / 2,
-        y: this.modelSize.y / 2,
-        z: this.modelSize.z / 2
-      };
-      console.log('📐 Creating physics collider matching model size:', this.modelSize, 'half-extents:', colliderSize);
-    } else {
-      // Fallback to default size
-      colliderSize = { x: 1, y: 0.5, z: 2 };
-      console.warn('⚠️ No model size available, using default collider size');
+    // Set damping to prevent excessive spinning and sliding
+    // Try to set damping on the rigid body (if methods exist)
+    if (this.rigidBody && typeof this.rigidBody.setLinvelDamping === 'function') {
+      this.rigidBody.setLinvelDamping(0.1); // Linear damping
+    }
+    if (this.rigidBody && typeof this.rigidBody.setAngvelDamping === 'function') {
+      this.rigidBody.setAngvelDamping(5.0); // Strong angular damping to prevent wild spinning
     }
     
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(colliderSize.x, colliderSize.y, colliderSize.z)
+    // Create collider using shared constant so server + client match exactly.
+    const he = CAR.COLLIDER_HALF_EXTENTS || { x: 2, y: 1, z: 4 };
+    
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(he.x, he.y, he.z)
       .setMass(CAR.MASS)
       .setFriction(0.7)
-      .setRestitution(0.3);
+      .setRestitution(0.6); // Increased for more bounce
     
     this.collider = world.createCollider(colliderDesc, this.rigidBody);
-    console.log('✅ Physics collider created with size:', colliderSize);
+    console.log('✅ Physics collider created with half-extents:', he);
   }
 
   setInput(throttle, brake, steer) {
@@ -470,38 +571,62 @@ export class Car {
     const right = new THREE.Vector3(1, 0, 0);
     right.applyQuaternion(new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w));
 
-    // Apply throttle/brake
+    // Apply throttle/brake with steering-based direction
     const speed = this.velocity.length();
     let acceleration = 0;
     
-    if (this.inputState.throttle > 0) {
+    // Signed throttle: forward(+), reverse(-)
+    if (this.inputState.throttle !== 0) {
       acceleration = CAR.ACCELERATION * this.inputState.throttle;
-    } else if (this.inputState.brake > 0) {
-      acceleration = -CAR.BRAKE_FORCE * this.inputState.brake;
     }
 
-    // Apply force in forward direction
-    const force = forward.multiplyScalar(acceleration);
-    body.applyImpulse({ x: force.x, y: force.y, z: force.z }, true);
+    // Steering changes the direction of movement (not body rotation)
+    // Rotate forward direction by steering angle around Y axis
+    const handlingMultiplier = this.hasFlag ? CAR.FLAG_CARRIER_HANDLING_PENALTY : 1.0;
+    const steerAngle = this.inputState.steer * 0.3 * handlingMultiplier; // Max ~17 degrees per frame
+    
+    // Rotate forward vector around Y axis by steer angle
+    const cosSteer = Math.cos(steerAngle);
+    const sinSteer = Math.sin(steerAngle);
+    const steeredForward = new THREE.Vector3(
+      forward.x * cosSteer - forward.z * sinSteer,
+      forward.y,
+      forward.x * sinSteer + forward.z * cosSteer
+    );
 
-    // Apply steering (torque around Y axis)
-    // Steering only works when the car is moving (has velocity)
-    // This makes turning realistic - you can't turn when stationary
-    if (speed > 0.1) { // Only steer when moving (speed > 0.1)
-      // Check if car is moving forward or backward
-      // Dot product of velocity and forward direction: positive = forward, negative = backward
-      const forwardSpeed = this.velocity.dot(forward);
-      const isMovingBackward = forwardSpeed < 0;
+    // Apply force in steered direction
+    if (acceleration !== 0) {
+      const force = steeredForward.multiplyScalar(acceleration);
+      body.applyImpulse({ x: force.x, y: force.y, z: force.z }, true);
+    }
+
+    // Extra braking: dampen velocity when Space is held.
+    if (this.inputState.brake > 0 && speed > 0.01) {
+      const brakeScale = 1 - Math.min(0.3, 0.2 * this.inputState.brake);
+      body.setLinvel({ x: linvel.x * brakeScale, y: linvel.y, z: linvel.z * brakeScale }, true);
+    }
+    
+    // Rotate car body to face movement direction (separate from steering)
+    // This makes the car visually turn as it moves in the steered direction
+    const currentVel = new THREE.Vector3(linvel.x, 0, linvel.z);
+    const velLen = currentVel.length();
+    if (velLen > 0.1) {
+      // Normalize velocity to get direction the car is moving
+      const velDir = currentVel.normalize();
       
-      const steerForce = this.inputState.steer * CAR.STEER_FORCE;
-      const handlingMultiplier = this.hasFlag ? CAR.FLAG_CARRIER_HANDLING_PENALTY : 1.0;
+      // Calculate angle between car's forward direction and movement direction
+      // Using atan2 on the cross product gives us the signed angle
+      const dot = forward.x * velDir.x + forward.z * velDir.z;
+      const cross = forward.x * velDir.z - forward.z * velDir.x;
+      const angleDiff = Math.atan2(cross, dot);
       
-      // Invert steering when going backward (swap left/right)
-      const finalSteerForce = isMovingBackward ? -steerForce * handlingMultiplier : steerForce * handlingMultiplier;
+      // Apply proportional rotation torque - stronger when angle difference is larger
+      // Use the angle directly (in radians) for smooth rotation
+      const rotationTorque = angleDiff * 500; // Proportional control - adjust multiplier for responsiveness
       
       body.applyTorqueImpulse({
         x: 0,
-        y: finalSteerForce,
+        y: rotationTorque,
         z: 0,
       }, true);
     }
@@ -514,6 +639,15 @@ export class Car {
     if (speed > CAR.MAX_SPEED) {
       const limitedVel = this.velocity.normalize().multiplyScalar(CAR.MAX_SPEED);
       body.setLinvel({ x: limitedVel.x, y: limitedVel.y, z: limitedVel.z }, true);
+    }
+
+    // Limit angular velocity to prevent excessive spinning
+    const angularSpeed = this.angularVelocity.length();
+    const maxAngularSpeed = 8.0; // Radians per second - allows some spinning but not excessive
+    if (angularSpeed > maxAngularSpeed) {
+      const scale = maxAngularSpeed / angularSpeed;
+      const limitedAngVel = this.angularVelocity.clone().multiplyScalar(scale);
+      body.setAngvel({ x: limitedAngVel.x, y: limitedAngVel.y, z: limitedAngVel.z }, true);
     }
 
     // Update visual position from physics
@@ -559,6 +693,11 @@ export class Car {
 
   setEliminated(eliminated) {
     this.isEliminated = eliminated;
+    // In multiplayer we might be rendering from snapshots without calling `update()`,
+    // and the visible object can be tempMesh/model/mesh depending on load timing.
+    if (this.tempMesh) {
+      this.tempMesh.visible = !eliminated;
+    }
     if (this.mesh) {
       this.mesh.visible = !eliminated;
     }

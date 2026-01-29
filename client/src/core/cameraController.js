@@ -6,12 +6,19 @@ export class CameraController {
     this.target = null;
     // Offset: behind the car (positive Z = behind), above, and to the side
     // The camera will face the tail (back) of the car
-    this.offset = new THREE.Vector3(0, 8, 15); // Behind and above the car
-    this.smoothness = 0.1;
+    this.offset = new THREE.Vector3(0, 6, 12); // Closer to the car
+    this.positionSmoothness = 0.4; // Faster position following (higher = faster response)
+    this.rotationSmoothness = 0.3; // Faster rotation (higher = faster response)
+    this.currentLookAt = new THREE.Vector3();
   }
 
   setTarget(car) {
     this.target = car;
+    // Initialize look-at position to car position
+    if (car && car.position) {
+      this.currentLookAt.copy(car.position);
+      this.currentLookAt.y += 1.5;
+    }
   }
 
   update() {
@@ -21,7 +28,12 @@ export class CameraController {
     
     // Get the car's rotation as a quaternion
     let carQuaternion;
-    if (this.target.rigidBody) {
+    // IMPORTANT: In multiplayer, visuals are updated from server snapshots while the client rigidBody
+    // may not be stepped. Prefer the rendered object's quaternion so "behind/tail" stays correct.
+    const visual = this.target.model || this.target.mesh || this.target.tempMesh;
+    if (visual?.quaternion) {
+      carQuaternion = visual.quaternion.clone();
+    } else if (this.target.rigidBody) {
       const rot = this.target.rigidBody.rotation();
       carQuaternion = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
     } else {
@@ -53,24 +65,26 @@ export class CameraController {
     
     const desiredPosition = targetPosition.clone().add(worldOffset);
 
-    // Smooth camera movement (increase smoothness for faster response)
-    this.camera.position.lerp(desiredPosition, 0.3); // Increased from 0.1
+    // Smooth camera position movement (lower value = smoother but slower response)
+    this.camera.position.lerp(desiredPosition, this.positionSmoothness);
 
-    // Look at the tail of the car (behind the car position)
-    // Calculate tail position: car position minus forward direction
-    const tailPosition = targetPosition.clone();
-    tailPosition.addScaledVector(forward, -2); // 2 units behind the car center
-    tailPosition.y += 1; // Slightly above ground
+    // Look at the car itself (from behind). This guarantees we face the tail visually.
+    // (Looking "behind" the car can make the camera look away from it depending on offsets.)
+    const lookAtPoint = targetPosition.clone();
+    lookAtPoint.y += 1; // Slightly above ground to look at car center
     
-    // Look at the tail
-    this.camera.lookAt(tailPosition);
+    // Smooth the look-at target to prevent jittery rotation
+    this.currentLookAt.lerp(lookAtPoint, this.rotationSmoothness);
+    
+    // Look at the back of the car
+    this.camera.lookAt(this.currentLookAt);
     
     // Debug logging occasionally
     if (Math.random() < 0.01) { // 1% chance per frame
       console.log('📷 Camera update:', {
         targetPos: targetPosition,
         cameraPos: this.camera.position,
-        lookAt: tailPosition
+        lookAt: this.currentLookAt.clone()
       });
     }
   }

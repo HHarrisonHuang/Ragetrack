@@ -25,25 +25,28 @@ export class MapLoader {
   loadDefaultMap() {
     const defaultMap = {
       blocks: [
-        { type: 'platform', position: [0, 0, 0], size: [60, 1, 60] },
-        { type: 'platform', position: [-30, 0, -30], size: [15, 1, 15] },
-        { type: 'platform', position: [30, 0, -30], size: [15, 1, 15] },
-        { type: 'platform', position: [-30, 0, 30], size: [15, 1, 15] },
-        { type: 'platform', position: [30, 0, 30], size: [15, 1, 15] },
+        { type: 'platform', position: [0, 0, 0], size: [120, 1, 120] },
+        { type: 'platform', position: [-60, 0, -60], size: [20, 1, 20] },
+        { type: 'platform', position: [60, 0, -60], size: [20, 1, 20] },
+        { type: 'platform', position: [-60, 0, 60], size: [20, 1, 20] },
+        { type: 'platform', position: [60, 0, 60], size: [20, 1, 20] },
+        { type: 'platform', position: [0, 2, 0], size: [10, 4, 10] },
       ],
       spawnPoints: {
         red: [
-          { position: [-8, 2, 0], rotation: [0, Math.PI / 2, 0] },
-          { position: [-8, 2, -5], rotation: [0, Math.PI / 2, 0] },
+          { position: [-20, 2, 0], rotation: [0, Math.PI / 2, 0] },
+          { position: [-20, 2, -10], rotation: [0, Math.PI / 2, 0] },
+          { position: [-20, 2, 10], rotation: [0, Math.PI / 2, 0] },
         ],
         blue: [
-          { position: [8, 2, 0], rotation: [0, -Math.PI / 2, 0] },
-          { position: [8, 2, -5], rotation: [0, -Math.PI / 2, 0] },
+          { position: [20, 2, 0], rotation: [0, -Math.PI / 2, 0] },
+          { position: [20, 2, -10], rotation: [0, -Math.PI / 2, 0] },
+          { position: [20, 2, 10], rotation: [0, -Math.PI / 2, 0] },
         ],
       },
       flags: {
-        red: { position: [-10, 2, 0] },
-        blue: { position: [10, 2, 0] },
+        red: { position: [-25, 2, 0] },
+        blue: { position: [25, 2, 0] },
       },
     };
     

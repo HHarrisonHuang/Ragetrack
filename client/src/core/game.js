@@ -7,6 +7,7 @@ import { MapLoader } from '../gameplay/mapLoader.js';
 import { InputHandler } from '../gameplay/inputHandler.js';
 import { MapEditor } from '../gameplay/mapEditor.js';
 import { PHYSICS } from '../../../shared/constants.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 const DEATH_THRESHOLD = PHYSICS.DEATH_THRESHOLD;
 
@@ -32,6 +33,13 @@ export class Game {
     
     this.animationFrameId = null;
     this.lastTime = 0;
+
+    // Cache car models for remote players (per team)
+    this.remoteCarTemplates = { red: null, blue: null };
+    this.remoteCarTemplatePromises = { red: null, blue: null };
+
+    // Snapshot interpolation: estimate server-time -> local-time offset
+    this.netTimeOffsetMs = null; // localNow - serverNow (smoothed)
   }
 
   init() {
@@ -110,21 +118,11 @@ export class Game {
     
     // Load a simple default map immediately for testing
     // This ensures something is visible even before game starts
-    // Note: loadDefaultMap is synchronous, so we call it directly
-    try {
-      this.mapLoader.loadDefaultMap();
+    this.mapLoader.loadDefaultMap().then(() => {
       console.log('✅ Default map loaded for initial view');
-    } catch (error) {
+    }).catch((error) => {
       console.error('❌ Failed to load default map:', error);
-    }
-    
-    // Add a test cube at origin to verify rendering works
-    const testGeometry = new THREE.BoxGeometry(5, 5, 5);
-    const testMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-    const testCube = new THREE.Mesh(testGeometry, testMaterial);
-    testCube.position.set(0, 5, 0);
-    this.scene.add(testCube);
-    console.log('🧪 Test cube added at origin (0, 5, 0) - should be visible');
+    });
     
     // Input handler
     this.inputHandler = new InputHandler();
@@ -254,12 +252,25 @@ export class Game {
       this.handleGameState(stateData);
     });
 
-    this.networkManager.on('playerUpdate', (updates) => {
-      // Handle other players' updates in multiplayer (server-authoritative)
+    const applySnapshot = (updates) => {
       if (!this.isMultiplayer || !updates) return;
 
+      // Update local player from server snapshot (minimal multiplayer style)
+      const myState = this.playerId ? updates[this.playerId] : null;
+      if (myState && Number.isFinite(Number(myState.t))) {
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const st = Number(myState.t);
+        const estOffset = now - st;
+        this.netTimeOffsetMs = (this.netTimeOffsetMs == null) ? estOffset : (this.netTimeOffsetMs * 0.9 + estOffset * 0.1);
+      }
+      if (myState && this.car && typeof this.car.applyServerState === 'function') {
+        this.car.applyServerState(myState);
+        this.car.setEliminated?.(!!myState.eliminated);
+      }
+
+      // Update remote players
       Object.entries(updates).forEach(([playerId, state]) => {
-        if (playerId === this.playerId) return; // local player handled separately
+        if (playerId === this.playerId) return;
 
         const remote = this.remotePlayers.get(playerId);
         if (!remote) {
@@ -269,7 +280,7 @@ export class Game {
             playerId,
             team,
             position: state.position || [0, 2, 0],
-            rotation: state.rotation || [0, 0, 0],
+            rotation: state.rotation || [0, 0, 0, 1],
           });
           return;
         }
@@ -278,12 +289,38 @@ export class Game {
         if (!mesh) return;
 
         const pos = state.position || [0, 2, 0];
-        const rot = state.rotation || [0, 0, 0];
+        // Store snapshot history for interpolation (prevents big-turn jitter)
+        remote.netHistory = remote.netHistory || [];
+        remote.netRenderDelayMs = remote.netRenderDelayMs ?? 100;
+        const nowLocal = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const st = Number(state.t);
+        const nowServer = (Number.isFinite(st) ? st : ((this.netTimeOffsetMs == null) ? nowLocal : (nowLocal - this.netTimeOffsetMs)));
+        remote.netHistory.push({
+          t: nowServer,
+          pos: new THREE.Vector3(pos[0], pos[1], pos[2]),
+          rot: state.rotation || [0, 0, 0, 1],
+        });
+        if (remote.netHistory.length > 10) remote.netHistory.splice(0, remote.netHistory.length - 10);
 
-        mesh.position.set(pos[0], pos[1], pos[2]);
-        mesh.rotation.set(rot[0], rot[1], rot[2]);
+        // Server rotation is a quaternion [x,y,z,w]; support Euler fallback.
+        // (Quaternion is derived during render interpolation)
+
         mesh.visible = !state.eliminated;
       });
+    };
+
+    // Legacy (main server) + minimal-style event (minimal server pattern)
+    // IMPORTANT: Our server currently emits BOTH `playerUpdate` and `snapshot` each tick.
+    // Feeding both into interpolation buffers causes jitter (especially on sharp turns).
+    // Prefer `snapshot`, but fall back to `playerUpdate` if snapshot isn't used.
+    this._usingSnapshotEvent = false;
+    this.networkManager.on('snapshot', (updates) => {
+      this._usingSnapshotEvent = true;
+      applySnapshot(updates);
+    });
+    this.networkManager.on('playerUpdate', (updates) => {
+      if (this._usingSnapshotEvent) return;
+      applySnapshot(updates);
     });
 
     this.networkManager.on('spawn', (data) => {
@@ -304,6 +341,10 @@ export class Game {
 
     this.networkManager.on('scoreUpdate', (scores) => {
       this.updateScoreboard(scores);
+    });
+
+    this.networkManager.on('serverDebug', (data) => {
+      console.log('🧩 serverDebug:', data);
     });
   }
 
@@ -394,9 +435,13 @@ export class Game {
       const mesh = existing.mesh;
       if (mesh) {
         const pos = Array.isArray(position) ? position : [position.x || 0, position.y || 2, position.z || 0];
-        const rot = Array.isArray(rotation) ? rotation : [rotation?.x || 0, rotation?.y || 0, rotation?.z || 0];
+        const rot = Array.isArray(rotation) ? rotation : [rotation?.x || 0, rotation?.y || 0, rotation?.z || 0, rotation?.w ?? 1];
         mesh.position.set(pos[0], pos[1], pos[2]);
-        mesh.rotation.set(rot[0], rot[1], rot[2]);
+        if (Array.isArray(rot) && rot.length === 4) {
+          mesh.quaternion.set(rot[0], rot[1], rot[2], rot[3]);
+        } else {
+          mesh.rotation.set(rot[0] || 0, rot[1] || 0, rot[2] || 0);
+        }
         existing.team = team || existing.team;
       }
       return;
@@ -404,33 +449,73 @@ export class Game {
 
     const pos = Array.isArray(position) ? position : [position.x || 0, position.y || 2, position.z || 0];
 
-    // Simple visual representation for remote players: taller colored box matching team
-    // Make it clearly above the floor so it doesn't look like a flat patch
-    const geometry = new THREE.BoxGeometry(4, 2, 8);
-    const color = team === 'blue' ? 0x0000ff : 0xff0000;
-    const material = new THREE.MeshStandardMaterial({ color });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    // Raise it slightly so the bottom sits on the platform instead of intersecting it
-    mesh.position.set(pos[0], pos[1] + 1, pos[2]);
-
-    // Apply rotation if provided
-    const rot = Array.isArray(rotation) ? rotation : [rotation?.x || 0, rotation?.y || 0, rotation?.z || 0];
-    mesh.rotation.set(rot[0], rot[1], rot[2]);
-
-    mesh.userData.isRemotePlayer = true;
-    mesh.userData.playerId = playerId;
-
-    this.scene.add(mesh);
-    this.remotePlayers.set(playerId, { mesh, team });
-
-    console.log('✅ Remote player visual created:', {
-      playerId,
-      team,
-      position: mesh.position.clone(),
-      rotation: mesh.rotation.clone(),
+    // Load the real car model for remote players (same as local), then clone it per player.
+    const rot = Array.isArray(rotation) ? rotation : [rotation?.x || 0, rotation?.y || 0, rotation?.z || 0, rotation?.w ?? 1];
+    this.loadRemoteCarTemplate(team || 'red').then((template) => {
+      const obj = template.clone(true);
+      obj.position.set(pos[0], pos[1], pos[2]);
+      if (rot.length === 4) {
+        obj.quaternion.set(rot[0], rot[1], rot[2], rot[3]);
+      } else {
+        obj.rotation.set(rot[0] || 0, rot[1] || 0, rot[2] || 0);
+      }
+      obj.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      obj.userData.isRemotePlayer = true;
+      obj.userData.playerId = playerId;
+      this.scene.add(obj);
+      this.remotePlayers.set(playerId, { mesh: obj, team: team || 'red' });
+    }).catch((err) => {
+      console.warn('⚠️ Failed to load remote car model, using box fallback:', err);
+      const geometry = new THREE.BoxGeometry(4, 2, 8);
+      const color = team === 'blue' ? 0x0000ff : 0xff0000;
+      const material = new THREE.MeshStandardMaterial({ color });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.position.set(pos[0], pos[1] + 1, pos[2]);
+      if (rot.length === 4) {
+        mesh.quaternion.set(rot[0], rot[1], rot[2], rot[3]);
+      } else {
+        mesh.rotation.set(rot[0] || 0, rot[1] || 0, rot[2] || 0);
+      }
+      this.scene.add(mesh);
+      this.remotePlayers.set(playerId, { mesh, team: team || 'red' });
     });
+  }
+
+  loadRemoteCarTemplate(team) {
+    const t = team === 'blue' ? 'blue' : 'red';
+    if (this.remoteCarTemplates[t]) return Promise.resolve(this.remoteCarTemplates[t]);
+    if (this.remoteCarTemplatePromises[t]) return this.remoteCarTemplatePromises[t];
+
+    const modelPath = t === 'blue' ? '/models/blueCar.glb' : '/models/redCar.glb';
+    const loader = new GLTFLoader();
+    this.remoteCarTemplatePromises[t] = new Promise((resolve, reject) => {
+      loader.load(
+        modelPath,
+        (gltf) => {
+          const scene = gltf.scene;
+          // Match the same sizing logic as local car: scale to target length 8.
+          const box = new THREE.Box3().setFromObject(scene);
+          const size = box.getSize(new THREE.Vector3());
+          const center = box.getCenter(new THREE.Vector3());
+          const targetZ = 8;
+          const scale = targetZ / Math.max(0.0001, size.z);
+          scene.scale.set(scale, scale, scale);
+          scene.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+          this.remoteCarTemplates[t] = scene;
+          resolve(scene);
+        },
+        undefined,
+        (err) => reject(err)
+      );
+    });
+    return this.remoteCarTemplatePromises[t];
   }
 
   createCar(position, rotation) {
@@ -507,7 +592,8 @@ export class Game {
     
     // Restore smoothness after a moment
     setTimeout(() => {
-      this.cameraController.smoothness = 0.3;
+      this.cameraController.positionSmoothness = 0.4;
+      this.cameraController.rotationSmoothness = 0.3;
     }, 2000);
     
     // Start game loop
@@ -532,10 +618,16 @@ export class Game {
     }).catch((error) => {
       console.error('❌ Failed to load map:', error);
       // Try loading default map
-      this.mapLoader.loadDefaultMap();
-      document.getElementById('lobby').style.display = 'none';
-      document.getElementById('gameInfo').style.display = 'block';
-      document.getElementById('scoreboard').style.display = 'block';
+      this.mapLoader.loadDefaultMap().then(() => {
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameInfo').style.display = 'block';
+        document.getElementById('scoreboard').style.display = 'block';
+      }).catch((err) => {
+        console.error('❌ Failed to load default map:', err);
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameInfo').style.display = 'block';
+        document.getElementById('scoreboard').style.display = 'block';
+      });
     });
 
     // Update scoreboard
@@ -610,17 +702,60 @@ export class Game {
     this.animationFrameId = requestAnimationFrame((time) => {
       const deltaTime = Math.min((time - this.lastTime) / 1000, 0.1);
       this.lastTime = time;
-      
-      if (this.physicsWorld) {
-        this.physicsWorld.update(deltaTime);
-      }
 
       if (this.car) {
         // Update input from keyboard
         const inputState = this.inputHandler.getInputState();
         this.car.setInput(inputState.throttle, inputState.brake, inputState.steer);
-        
-        this.car.update(deltaTime);
+
+        // Minimal-style multiplayer: server simulates, client only renders snapshots.
+        if (!this.isMultiplayer) {
+          if (this.physicsWorld) {
+            this.physicsWorld.update(deltaTime);
+          }
+          this.car.update(deltaTime);
+        } else {
+          // Smoothly render the latest server snapshot (prevents shaky/laggy feeling)
+          this.car.interpolateFromNetwork?.(deltaTime);
+
+          // Smooth remote players too (snapshot interpolation with small render delay)
+          this.remotePlayers.forEach((remote) => {
+            if (!remote?.mesh || !remote.netHistory || remote.netHistory.length === 0) return;
+            const nowLocal = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+            const nowServer = (this.netTimeOffsetMs == null) ? nowLocal : (nowLocal - this.netTimeOffsetMs);
+            const renderT = nowServer - (remote.netRenderDelayMs || 0);
+
+            let a = null;
+            let b = null;
+            for (let i = 0; i < remote.netHistory.length; i++) {
+              const s = remote.netHistory[i];
+              if (s.t <= renderT) a = s;
+              if (s.t >= renderT) { b = s; break; }
+            }
+            if (!a) a = remote.netHistory[0];
+            if (!b) b = remote.netHistory[remote.netHistory.length - 1];
+
+            let alpha = 0;
+            const span = (b.t - a.t);
+            if (span > 0.0001) alpha = Math.max(0, Math.min(1, (renderT - a.t) / span));
+
+            const pos = a.pos.clone().lerp(b.pos, alpha);
+
+            const qa = new THREE.Quaternion();
+            const qb = new THREE.Quaternion();
+            const ra = a.rot;
+            const rb = b.rot;
+            if (Array.isArray(ra) && ra.length === 4) qa.set(ra[0], ra[1], ra[2], ra[3]);
+            else if (Array.isArray(ra) && ra.length >= 3) qa.setFromEuler(new THREE.Euler(ra[0], ra[1], ra[2]));
+            if (Array.isArray(rb) && rb.length === 4) qb.set(rb[0], rb[1], rb[2], rb[3]);
+            else if (Array.isArray(rb) && rb.length >= 3) qb.setFromEuler(new THREE.Euler(rb[0], rb[1], rb[2]));
+
+            const q = qa.slerp(qb, alpha);
+
+            remote.mesh.position.copy(pos);
+            remote.mesh.quaternion.copy(q);
+          });
+        }
         
         // Check for fall
         if (this.car.position.y < DEATH_THRESHOLD) {
@@ -634,7 +769,7 @@ export class Game {
 
         // Send input to server in multiplayer
         if (this.isMultiplayer && this.networkManager) {
-          this.networkManager.sendInput(this.car.getInputState());
+          this.networkManager.sendInput(inputState);
         }
       } else {
         // Log once per second if no car

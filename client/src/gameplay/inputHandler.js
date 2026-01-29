@@ -15,12 +15,19 @@ export class InputHandler {
   }
 
   getInputState() {
+    const forward = (this.keys['w'] || this.keys['arrowup']) ? 1 : 0;
+    const reverse = (this.keys['s'] || this.keys['arrowdown']) ? 1 : 0;
     return {
-      throttle: (this.keys['w'] || this.keys['arrowup']) ? 1 : 0,
-      brake: (this.keys['s'] || this.keys['arrowdown']) ? 1 : 0,
-      // Swapped: left key now steers right (1), right key now steers left (-1)
-      steer: (this.keys['a'] || this.keys['arrowleft']) ? 1 : 
-             (this.keys['d'] || this.keys['arrowright']) ? -1 : 0,
+      // Signed throttle: forward = +1, reverse = -1
+      throttle: forward ? 1 : (reverse ? -1 : 0),
+      // Brake (separate from reverse): Space
+      brake: this.keys[' '] ? 1 : 0,
+      // Normal steering input:
+      // - A / Left Arrow = steer left (-1)
+      // - D / Right Arrow = steer right (+1)
+      // The car physics handles reversing steering when moving backward.
+      steer: (this.keys['a'] || this.keys['arrowleft']) ? -1 :
+             (this.keys['d'] || this.keys['arrowright']) ? 1 : 0,
     };
   }
 

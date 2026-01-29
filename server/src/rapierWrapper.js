@@ -66,6 +66,15 @@ export class World {
     // Integration parameters
     this.integrationParameters = new wasmModule.RawIntegrationParameters(1.0 / 60.0);
   }
+
+  // Debug helpers
+  numBodies() {
+    return typeof this.rawBodies?.len === 'function' ? this.rawBodies.len() : null;
+  }
+
+  numColliders() {
+    return typeof this.rawColliders?.len === 'function' ? this.rawColliders.len() : null;
+  }
   
   step() {
     if (!this.rawPhysicsPipeline || !this.rawBodies) return;

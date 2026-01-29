@@ -75,6 +75,11 @@ io.on('connection', (socket) => {
   socket.on('playerInput', (inputState) => {
     gameServer.handlePlayerInput(socket.id, inputState);
   });
+  
+  // Minimal-style input event (same data shape)
+  socket.on('input', (inputState) => {
+    gameServer.handlePlayerInput(socket.id, inputState);
+  });
 
   socket.on('playerFall', () => {
     gameServer.handlePlayerFall(socket.id);
