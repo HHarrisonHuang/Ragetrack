@@ -40,6 +40,20 @@ export class Game {
 
     // Snapshot interpolation: estimate server-time -> local-time offset
     this.netTimeOffsetMs = null; // localNow - serverNow (smoothed)
+
+    // Audio
+    this.backgroundMusic = null; // HTML Audio fallback
+    this.deathSound = null; // HTML Audio fallback
+    this.audioUnlocked = false;
+    this.musicEnabled = true;
+    this.pendingDeathSound = false;
+    this.lastMusicLoopAt = 0;
+    this.audioCtx = null;
+    this.bgBuffer = null;
+    this.bgSource = null;
+    this.bgGain = null;
+    this.deathBuffer = null;
+    this.useWebAudio = true; // Try Web Audio first, fallback to HTML Audio
   }
 
   init() {
@@ -56,6 +70,8 @@ export class Game {
       console.log('✅ Network setup complete');
       this.setupUI();
       console.log('✅ UI setup complete');
+      this.setupAudio();
+      console.log('✅ Audio setup complete');
     } catch (error) {
       console.error('❌ Error in init():', error);
       throw error;
@@ -249,6 +265,20 @@ export class Game {
             this.mapEditor.startEditing();
             editorBtn.textContent = 'Close Map Editor';
           }
+        }
+      });
+    }
+
+    // Back to spawn button
+    const respawnBtn = document.getElementById('respawnBtn');
+    if (respawnBtn) {
+      respawnBtn.addEventListener('click', () => {
+        // Only allow respawn during gameplay
+        if (this.gameState !== 'playing') {
+          return;
+        }
+        if (this.networkManager) {
+          this.networkManager.sendRespawnRequest();
         }
       });
     }
@@ -840,12 +870,20 @@ export class Game {
     this.gameState = 'playing';
     this.isMultiplayer = true;
     
+    // Don't auto-start music here; it's handled on page load or by the sound button
+    
     // Disable map editor button during gameplay
     const editorBtn = document.getElementById('editorBtn');
     if (editorBtn) {
       editorBtn.disabled = true;
       editorBtn.style.opacity = '0.5';
       editorBtn.style.cursor = 'not-allowed';
+    }
+
+    // Hide respawn button initially (will show when flipped)
+    const respawnBtnOverlay = document.getElementById('respawnBtnOverlay');
+    if (respawnBtnOverlay) {
+      respawnBtnOverlay.style.display = 'none';
     }
     
     // Use custom map data if provided, otherwise load from file
@@ -926,8 +964,10 @@ export class Game {
     // Hide game UI
     const gameInfo = document.getElementById('gameInfo');
     const scoreboard = document.getElementById('scoreboard');
+    const respawnBtnOverlay = document.getElementById('respawnBtnOverlay');
     if (gameInfo) gameInfo.style.display = 'none';
     if (scoreboard) scoreboard.style.display = 'none';
+    if (respawnBtnOverlay) respawnBtnOverlay.style.display = 'none';
     
     // Show win/lose overlay
     const overlay = document.getElementById('gameEndOverlay');
@@ -998,11 +1038,277 @@ export class Game {
     document.getElementById('blueScore').textContent = scores.blue || 0;
   }
 
+  updateRespawnButtonVisibility() {
+    const respawnBtnOverlay = document.getElementById('respawnBtnOverlay');
+    if (!respawnBtnOverlay || !this.car || this.gameState !== 'playing') {
+      if (respawnBtnOverlay) respawnBtnOverlay.style.display = 'none';
+      return;
+    }
+
+    // Don't show button if car is below platform (falling/eliminated)
+    // Platform top is at Y=0.5, so check if car is above Y=-5 (reasonable threshold)
+    const carPos = this.car.position || (this.car.tempMesh ? this.car.tempMesh.position : null);
+    if (!carPos || carPos.y < -5) {
+      respawnBtnOverlay.style.display = 'none';
+      return;
+    }
+
+    // Check if car is flipped by checking the car's up vector
+    let carQuaternion;
+    const visual = this.car.model || this.car.mesh || this.car.tempMesh;
+    if (visual?.quaternion) {
+      carQuaternion = visual.quaternion.clone();
+    } else if (this.car.rigidBody) {
+      const rot = this.car.rigidBody.rotation();
+      carQuaternion = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
+    } else {
+      // Fallback to Euler rotation
+      const targetRotation = this.car.rotation || new THREE.Euler(0, 0, 0);
+      carQuaternion = new THREE.Quaternion().setFromEuler(targetRotation);
+    }
+
+    // Calculate the car's up vector (Y axis in local space)
+    const up = new THREE.Vector3(0, 1, 0);
+    up.applyQuaternion(carQuaternion);
+
+    // Car is flipped if up vector Y component is negative (pointing down)
+    // Use a threshold (0.3) to account for slight tilts
+    const isFlipped = up.y < 0.3;
+
+    // Show overlay only when flipped AND above platform
+    respawnBtnOverlay.style.display = isFlipped ? 'block' : 'none';
+  }
+
+  setupAudio() {
+    // Initialize background music (Web Audio for gapless loop)
+    this.initBackgroundMusic();
+
+    // Initialize death sound (Web Audio buffer)
+    this.initDeathSound();
+
+    // Set up sound button toggle
+    const soundButton = document.getElementById('soundButton');
+    if (soundButton) {
+      soundButton.addEventListener('click', () => {
+        this.audioUnlocked = true;
+        if (this.pendingDeathSound) {
+          this.pendingDeathSound = false;
+          this.playDeathSound();
+        }
+        this.toggleMusic();
+      });
+      this.updateSoundButton();
+    }
+
+    // Unlock audio on first user interaction (required by browsers)
+    const unlockAudio = () => {
+      this.audioUnlocked = true;
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+      if (this.pendingDeathSound) {
+        this.pendingDeathSound = false;
+        this.playDeathSound();
+      }
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+    document.addEventListener('touchstart', unlockAudio, { once: true });
+  }
+
+  async initBackgroundMusic() {
+    try {
+      if (!this.audioCtx) {
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const audioPath = '/audio/RagetrackBackground.mp3';
+      console.log('Loading background music from:', audioPath);
+      const response = await fetch(audioPath);
+      if (!response.ok) {
+        console.error(`Failed to load background music (Web Audio) from ${audioPath}:`, response.status, response.statusText);
+        this.useWebAudio = false;
+        this.initBackgroundMusicHTML();
+        return;
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      this.bgBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+      console.log('Background music loaded successfully (Web Audio)');
+      this.startBackgroundMusic();
+    } catch (err) {
+      console.error('Background music load failed (Web Audio), using HTML Audio fallback:', err);
+      this.useWebAudio = false;
+      this.initBackgroundMusicHTML();
+    }
+  }
+
+  initBackgroundMusicHTML() {
+    // HTML Audio fallback
+    this.backgroundMusic = new Audio('/audio/RagetrackBackground.mp3');
+    this.backgroundMusic.loop = true;
+    this.backgroundMusic.volume = 0.5;
+    this.backgroundMusic.preload = 'auto';
+    this.backgroundMusic.addEventListener('play', () => {
+      this.audioUnlocked = true;
+      this.updateSoundButton();
+    });
+    this.backgroundMusic.addEventListener('pause', () => {
+      this.updateSoundButton();
+    });
+    this.startBackgroundMusic();
+  }
+
+  async initDeathSound() {
+    try {
+      if (!this.audioCtx) {
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const audioPath = '/audio/deathSound.mp3';
+      console.log('Loading death sound from:', audioPath);
+      const response = await fetch(audioPath);
+      if (!response.ok) {
+        console.error(`Failed to load death sound (Web Audio) from ${audioPath}:`, response.status, response.statusText);
+        // HTML Audio fallback will be created on-demand in playDeathSound
+        return;
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      this.deathBuffer = await this.audioCtx.decodeAudioData(arrayBuffer);
+      console.log('Death sound loaded successfully (Web Audio)');
+    } catch (err) {
+      console.error('Death sound load failed (Web Audio), will use HTML Audio fallback:', err);
+    }
+  }
+
+  startBackgroundMusic() {
+    if (!this.musicEnabled || !this.audioUnlocked) {
+      this.updateSoundButton();
+      return;
+    }
+    
+    if (this.useWebAudio && this.audioCtx && this.bgBuffer) {
+      // Use Web Audio
+      if (this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+      if (this.bgSource) {
+        this.updateSoundButton();
+        return;
+      }
+      this.bgSource = this.audioCtx.createBufferSource();
+      this.bgSource.buffer = this.bgBuffer;
+      this.bgSource.loop = true;
+      this.bgGain = this.audioCtx.createGain();
+      this.bgGain.gain.value = 0.5;
+      this.bgSource.connect(this.bgGain).connect(this.audioCtx.destination);
+      this.bgSource.start(0);
+    } else if (this.backgroundMusic) {
+      // Use HTML Audio fallback
+      if (this.backgroundMusic.paused) {
+        this.backgroundMusic.play().catch(err => {
+          console.log('Could not play background music:', err);
+        });
+      }
+    }
+    this.updateSoundButton();
+  }
+
+  stopBackgroundMusic() {
+    if (this.useWebAudio && this.bgSource) {
+      try {
+        this.bgSource.stop(0);
+      } catch (e) {
+        // ignore
+      }
+      this.bgSource.disconnect();
+      this.bgSource = null;
+    } else if (this.backgroundMusic) {
+      this.backgroundMusic.pause();
+    }
+    this.updateSoundButton();
+  }
+
+  toggleMusic() {
+    this.musicEnabled = !this.musicEnabled;
+    if (this.musicEnabled) {
+      this.startBackgroundMusic();
+    } else {
+      this.stopBackgroundMusic();
+    }
+    this.updateSoundButton();
+  }
+
+  updateSoundButton() {
+    const soundButton = document.getElementById('soundButton');
+    if (soundButton) {
+      let isPlaying = false;
+      if (this.useWebAudio) {
+        isPlaying = this.musicEnabled && !!this.bgSource;
+      } else {
+        isPlaying = this.musicEnabled && this.backgroundMusic && !this.backgroundMusic.paused;
+      }
+      
+      if (!isPlaying) {
+        soundButton.textContent = '🔇';
+        soundButton.title = 'Start Music';
+      } else {
+        soundButton.textContent = '🔊';
+        soundButton.title = 'Stop Music';
+      }
+    }
+  }
+
+  playDeathSound() {
+    if (!this.audioUnlocked) {
+      this.pendingDeathSound = true;
+      return;
+    }
+    
+    // Try Web Audio first (gapless)
+    if (this.audioCtx && this.deathBuffer) {
+      try {
+        if (this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
+        }
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = this.deathBuffer;
+        const gain = this.audioCtx.createGain();
+        gain.gain.value = 0.7;
+        source.connect(gain).connect(this.audioCtx.destination);
+        source.start(0);
+        return;
+      } catch (err) {
+        console.error('Web Audio death sound failed:', err);
+      }
+    }
+    
+    // Fallback to HTML Audio
+    try {
+      const sound = new Audio('/audio/deathSound.mp3');
+      sound.volume = 0.7;
+      sound.play().catch(err => {
+        console.error('Could not play death sound:', err);
+      });
+    } catch (err) {
+      console.error('Failed to create death sound:', err);
+    }
+  }
+
   handleElimination() {
     if (this.car) {
       this.car.setEliminated(true);
       // Hide flag indicator when eliminated
       this.updateCarFlagVisual(this.car, null);
+    }
+
+    // Play death sound
+    this.playDeathSound();
+
+    // Hide respawn button when eliminated
+    const respawnBtnOverlay = document.getElementById('respawnBtnOverlay');
+    if (respawnBtnOverlay) {
+      respawnBtnOverlay.style.display = 'none';
     }
     
     // Show respawn overlay with countdown
@@ -1118,6 +1424,8 @@ export class Game {
         // Check for fall
         if (this.car.position.y < DEATH_THRESHOLD) {
           if (!this.car.isEliminated) {
+            // Play death sound when falling
+            this.playDeathSound();
             this.car.setEliminated(true);
             // Hide flag indicator when falling
             this.updateCarFlagVisual(this.car, null);
@@ -1126,6 +1434,9 @@ export class Game {
             }
           }
         }
+
+        // Check if car is flipped and show/hide respawn button
+        this.updateRespawnButtonVisibility();
 
         // Send input to server in multiplayer
         if (this.isMultiplayer && this.networkManager) {

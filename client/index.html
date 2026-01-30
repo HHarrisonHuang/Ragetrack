@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ragetrack - Capture the Flag</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏎️</text></svg>">
   <style>
     * {
       margin: 0;
@@ -169,6 +170,32 @@
       font-size: 14px;
       pointer-events: all;
     }
+    #soundButton {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 50px;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      color: white;
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: all;
+      z-index: 200;
+      transition: background 0.2s, transform 0.2s;
+    }
+    #soundButton:hover {
+      background: rgba(0, 0, 0, 0.9);
+      transform: scale(1.1);
+    }
+    #scoreboard {
+      top: 80px;
+    }
     .team-score {
       margin: 5px 0;
     }
@@ -203,6 +230,16 @@
         <button id="editorBtn" style="padding: 5px 10px; font-size: 12px;">Map Editor</button>
       </div>
     </div>
+    <div id="respawnBtnOverlay" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; pointer-events: all;">
+      <button id="respawnBtn" style="padding: 20px 40px; font-size: 24px; font-weight: bold; background: rgba(255, 100, 100, 0.9); color: white; border: 3px solid white; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5); transition: transform 0.2s, background 0.2s;">Back to Spawn</button>
+    </div>
+    <style>
+      #respawnBtn:hover {
+        transform: scale(1.1);
+        background: rgba(255, 120, 120, 1) !important;
+      }
+    </style>
+    <button id="soundButton" title="Toggle Music">🔊</button>
     <div id="scoreboard" style="display: none;">
       <div class="team-score red-team">Red: <span id="redScore">0</span></div>
       <div class="team-score blue-team">Blue: <span id="blueScore">0</span></div>

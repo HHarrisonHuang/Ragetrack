@@ -101,11 +101,29 @@ export class GameServer {
     }
     
     this.mapData.blocks.forEach((block) => {
-      const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(
-        block.position[0],
-        block.position[1],
-        block.position[2]
-      );
+      const rotation = block.rotation || [0, 0, 0];
+      // Simple Euler to Quaternion for Y-axis rotation (most common for map blocks)
+      const cy = Math.cos(rotation[1] * 0.5);
+      const sy = Math.sin(rotation[1] * 0.5);
+      const cp = Math.cos(rotation[0] * 0.5);
+      const sp = Math.sin(rotation[0] * 0.5);
+      const cr = Math.cos(rotation[2] * 0.5);
+      const sr = Math.sin(rotation[2] * 0.5);
+
+      const q = {
+        w: cr * cp * cy + sr * sp * sy,
+        x: sr * cp * cy - cr * sp * sy,
+        y: cr * sp * cy + sr * cp * sy,
+        z: cr * cp * sy - sr * sp * cy
+      };
+
+      const bodyDesc = RAPIER.RigidBodyDesc.fixed()
+        .setTranslation(
+          block.position[0],
+          block.position[1],
+          block.position[2]
+        )
+        .setRotation(q);
       const body = world.createRigidBody(bodyDesc);
       
       const colliderDesc = RAPIER.ColliderDesc.cuboid(
@@ -401,6 +419,35 @@ export class GameServer {
     this.io.to(socketId).emit('eliminated', {});
   }
 
+  handleRespawnRequest(socketId) {
+    if (this.gameState !== 'playing') return;
+    
+    const playerId = this.players.get(socketId);
+    if (!playerId) return;
+    
+    const player = this.playerManager.getPlayer(playerId);
+    if (!player || !this.mapData) return;
+    
+    // Get spawn point for player's team
+    const spawns = this.mapData.spawnPoints[player.team];
+    if (!spawns || spawns.length === 0) return;
+    
+    const spawn = spawns[Math.floor(Math.random() * spawns.length)];
+    
+    // Teleport player back to spawn
+    player.car.respawn(spawn.position, spawn.rotation);
+    
+    // Broadcast spawn event to all clients so they see the teleport
+    this.io.emit('spawn', {
+      playerId: playerId,
+      team: player.team,
+      position: spawn.position,
+      rotation: spawn.rotation,
+    });
+    
+    console.log(`📢 Player ${playerId} teleported back to spawn`);
+  }
+
   handleFlagPickup(playerId, flagTeam) {
     const player = this.playerManager.getPlayer(playerId);
     if (!player || player.eliminated || player.hasFlag) return false;
@@ -593,8 +640,14 @@ export class GameServer {
         // Update physics
         this.physicsWorld.update(deltaTime);
         
-        // Update players (pass io for respawn broadcasts)
-        this.playerManager.update(deltaTime, this.mapData, this.io);
+        // Create reverse map: playerId -> socketId
+        const playerSocketMap = new Map();
+        this.players.forEach((playerId, socketId) => {
+          playerSocketMap.set(playerId, socketId);
+        });
+        
+        // Update players (pass io for respawn broadcasts and elimination events)
+        this.playerManager.update(deltaTime, this.mapData, this.io, playerSocketMap);
 
         // If a player gets eliminated by server-side physics (falling), ensure any carried flag
         // returns immediately. (PlayerManager can eliminate without going through handlePlayerFall.)

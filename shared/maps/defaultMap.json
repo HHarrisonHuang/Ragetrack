@@ -3,7 +3,7 @@
     {
       "type": "platform",
       "position": [0, 0, 0],
-      "size": [100, 1, 40]
+      "size": [200, 1, 80]
     },
     {
       "type": "platform",
@@ -13,34 +13,34 @@
   ],
   "bases": {
     "red": {
-      "position": [-40, 0.6, 0],
+      "position": [-80, 0.6, 0],
       "size": [15, 0.2, 14]
     },
     "blue": {
-      "position": [40, 0.6, 0],
+      "position": [80, 0.6, 0],
       "size": [15, 0.2, 14]
     }
   },
   "spawnPoints": {
     "red": [
       {
-        "position": [-35, 2, 0],
-        "rotation": [0, 1.5708, 0]
+        "position": [-75, 2, 0],
+        "rotation": [0, 4.71239, 0]
       }
     ],
     "blue": [
       {
-        "position": [35, 2, 0],
-        "rotation": [0, -1.5708, 0]
+        "position": [75, 2, 0],
+        "rotation": [0, 1.5708, 0]
       }
     ]
   },
   "flags": {
     "red": {
-      "position": [-40, 1, 0]
+      "position": [-80, 1, 0]
     },
     "blue": {
-      "position": [40, 1, 0]
+      "position": [80, 1, 0]
     }
   }
 }

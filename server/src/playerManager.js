@@ -81,7 +81,7 @@ export class PlayerManager {
     return null;
   }
 
-  update(deltaTime, mapData, io) {
+  update(deltaTime, mapData, io, playerSocketMap) {
     const currentTime = Date.now();
     
     this.players.forEach((player) => {
@@ -92,6 +92,15 @@ export class PlayerManager {
       const position = player.car.getPosition();
       if (position.y < DEATH_THRESHOLD && !player.eliminated) {
         this.eliminatePlayer(player.id);
+        
+        // Emit 'eliminated' event to the player's socket
+        if (io && playerSocketMap) {
+          const socketId = playerSocketMap.get(player.id);
+          if (socketId) {
+            console.log(`💀 Server detected fall for player ${player.id}, emitting 'eliminated' to socket ${socketId}`);
+            io.to(socketId).emit('eliminated', {});
+          }
+        }
       }
       
       // Handle respawn

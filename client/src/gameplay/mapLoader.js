@@ -46,20 +46,20 @@ export class MapLoader {
     // Create a simple default map - matches defaultMap.json
     const defaultMap = {
       blocks: [
-        { type: 'platform', position: [0, 0, 0], size: [100, 1, 40] },
+        { type: 'platform', position: [0, 0, 0], size: [200, 1, 80] },
         { type: 'platform', position: [0, 2, 0], size: [8, 4, 8] },
       ],
       bases: {
-        red: { position: [-40, 0.6, 0], size: [15, 0.2, 14] },
-        blue: { position: [40, 0.6, 0], size: [15, 0.2, 14] },
+        red: { position: [-80, 0.6, 0], size: [15, 0.2, 14] },
+        blue: { position: [80, 0.6, 0], size: [15, 0.2, 14] },
       },
       spawnPoints: {
-        red: [{ position: [-35, 2, 0], rotation: [0, Math.PI / 2, 0] }],
-        blue: [{ position: [35, 2, 0], rotation: [0, -Math.PI / 2, 0] }],
+        red: [{ position: [-75, 2, 0], rotation: [0, Math.PI * 3 / 2, 0] }],
+        blue: [{ position: [75, 2, 0], rotation: [0, Math.PI / 2, 0] }],
       },
       flags: {
-        red: { position: [-40, 1, 0] },
-        blue: { position: [40, 1, 0] },
+        red: { position: [-80, 1, 0] },
+        blue: { position: [80, 1, 0] },
       },
     };
     
@@ -93,6 +93,9 @@ export class MapLoader {
         const material = new THREE.MeshStandardMaterial({ color });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.set(...block.position);
+        if (block.rotation) {
+          mesh.rotation.set(...block.rotation);
+        }
         mesh.receiveShadow = true;
         mesh.castShadow = true;
         mesh.userData.isMapObject = true;
@@ -116,11 +119,19 @@ export class MapLoader {
               colliderDesc.setRestitution(0.1);
             }
             
-            const bodyDesc = RAPIER.RigidBodyDesc.fixed().setTranslation(
-              block.position[0],
-              block.position[1],
-              block.position[2]
+            const rotation = block.rotation || [0, 0, 0];
+            const quaternion = new THREE.Quaternion().setFromEuler(
+              new THREE.Euler(rotation[0], rotation[1], rotation[2])
             );
+            
+            const bodyDesc = RAPIER.RigidBodyDesc.fixed()
+              .setTranslation(
+                block.position[0],
+                block.position[1],
+                block.position[2]
+              )
+              .setRotation({ x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w });
+            
             const body = world.createRigidBody(bodyDesc);
             world.createCollider(colliderDesc, body);
           } catch (error) {

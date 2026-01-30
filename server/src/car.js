@@ -115,6 +115,19 @@ export class Car {
     this.inputState.steer = Math.max(-1, Math.min(1, steer));
   }
 
+  isFlipped() {
+    if (!this.rigidBody) return false;
+    
+    const rotation = this.rigidBody.rotation();
+    
+    // Calculate the car's up vector (Y axis in local space transformed by rotation)
+    const up = Car.rotateVecByQuat(rotation, { x: 0, y: 1, z: 0 });
+    
+    // Car is flipped if up vector Y component is below threshold (pointing down)
+    // Use threshold of 0.3 to account for slight tilts
+    return up.y < 0.3;
+  }
+
   update(deltaTime) {
     if (!this.rigidBody) return;
 
@@ -125,6 +138,9 @@ export class Car {
     const RAPIER = this.physicsWorld.getRAPIER();
     if (!RAPIER) return;
     
+    // Check if car is flipped - if so, don't apply any movement inputs
+    const flipped = this.isFlipped();
+    
     // Get forward direction (car's current facing)
     const forwardRotated = Car.rotateVecByQuat(rotation, { x: 0, y: 0, z: -1 });
     
@@ -134,83 +150,88 @@ export class Car {
     const handlingMultiplier = this.hasFlag ? CAR.FLAG_CARRIER_HANDLING_PENALTY : 1.0;
 
     // 1) Apply throttle impulse along car facing (supports proper reverse)
-    let driveDirX = forwardRotated.x;
-    let driveDirZ = forwardRotated.z;
-    const driveDirLen = Math.sqrt(driveDirX ** 2 + driveDirZ ** 2) || 1;
-    driveDirX /= driveDirLen;
-    driveDirZ /= driveDirLen;
+    // Skip if flipped
+    if (!flipped) {
+      let driveDirX = forwardRotated.x;
+      let driveDirZ = forwardRotated.z;
+      const driveDirLen = Math.sqrt(driveDirX ** 2 + driveDirZ ** 2) || 1;
+      driveDirX /= driveDirLen;
+      driveDirZ /= driveDirLen;
 
-    if (this.inputState.throttle !== 0) {
-      // Reduce reverse speed (throttle < 0) while keeping forward speed the same
-      const reverseSpeedMultiplier = 0.6; // Reverse is 60% of forward speed
-      const throttleEffective = this.inputState.throttle > 0 
-        ? this.inputState.throttle 
-        : this.inputState.throttle * reverseSpeedMultiplier;
-      const driveImpulse = CAR.ACCELERATION * throttleEffective;
-      body.applyImpulse({ x: driveDirX * driveImpulse, y: 0, z: driveDirZ * driveImpulse }, true);
-    }
+      if (this.inputState.throttle !== 0) {
+        // Reduce reverse speed (throttle < 0) while keeping forward speed the same
+        const reverseSpeedMultiplier = 0.6; // Reverse is 60% of forward speed
+        const throttleEffective = this.inputState.throttle > 0 
+          ? this.inputState.throttle 
+          : this.inputState.throttle * reverseSpeedMultiplier;
+        const driveImpulse = CAR.ACCELERATION * throttleEffective;
+        body.applyImpulse({ x: driveDirX * driveImpulse, y: 0, z: driveDirZ * driveImpulse }, true);
+      }
 
-    // 2) Brake (Space): dampen horizontal velocity
-    linvel = body.linvel();
-    const speed = Math.sqrt(linvel.x ** 2 + linvel.y ** 2 + linvel.z ** 2);
-    if (this.inputState.brake > 0 && speed > 0.01) {
-      const brakeScale = 1 - Math.min(0.35, 0.25 * this.inputState.brake);
-      body.setLinvel({ x: linvel.x * brakeScale, y: linvel.y, z: linvel.z * brakeScale }, true);
-    }
+      // 2) Brake (Space): dampen horizontal velocity
+      linvel = body.linvel();
+      const speed = Math.sqrt(linvel.x ** 2 + linvel.y ** 2 + linvel.z ** 2);
+      if (this.inputState.brake > 0 && speed > 0.01) {
+        const brakeScale = 1 - Math.min(0.35, 0.25 * this.inputState.brake);
+        body.setLinvel({ x: linvel.x * brakeScale, y: linvel.y, z: linvel.z * brakeScale }, true);
+      }
 
-    // 3) Steering: bend the horizontal velocity direction (works for forward + reverse)
-    linvel = body.linvel();
-    const speedH = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
-    if (this.inputState.steer !== 0 && speedH > 0.05) {
-      // Constant turn rate regardless of speed (reduced for smoother, less shaky turns)
-      const maxTurnRate = 0.6 * handlingMultiplier; // rad/s
+      // 3) Steering: bend the horizontal velocity direction (works for forward + reverse)
+      linvel = body.linvel();
+      const speedH = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
+      if (this.inputState.steer !== 0 && speedH > 0.05) {
+        // Constant turn rate regardless of speed (reduced for smoother, less shaky turns)
+        const maxTurnRate = 0.6 * handlingMultiplier; // rad/s
+        
+        // Make FORWARD steering behave exactly like the current BACKWARD steering feel:
+        // - Swap left/right when moving forward
+        // - Keep backward steering unchanged
+        // Determine if we're moving backward relative to where the car is facing.
+        const forwardSpeed =
+          linvel.x * forwardRotated.x +
+          linvel.z * forwardRotated.z;
+        const isMovingBackward = forwardSpeed < 0;
+        let steerEffective = isMovingBackward ? this.inputState.steer : -this.inputState.steer;
+        
+        // Reduce steering sensitivity for normal turns (makes turns smaller/more gradual)
+        // Full steering input still reaches maxTurnRate, but normal inputs are scaled down
+        const steeringSensitivity = 0.65; // Lower = smaller normal turns
+        steerEffective *= steeringSensitivity;
+
+        const steerAngle = steerEffective * maxTurnRate * Math.max(0.0001, deltaTime); // radians this tick
+
+        const cosA = Math.cos(steerAngle);
+        const sinA = Math.sin(steerAngle);
+        const newVx = linvel.x * cosA - linvel.z * sinA;
+        const newVz = linvel.x * sinA + linvel.z * cosA;
+        body.setLinvel({ x: newVx, y: linvel.y, z: newVz }, true);
+      }
       
-      // Make FORWARD steering behave exactly like the current BACKWARD steering feel:
-      // - Swap left/right when moving forward
-      // - Keep backward steering unchanged
-      // Determine if we're moving backward relative to where the car is facing.
-      const forwardSpeed =
-        linvel.x * forwardRotated.x +
-        linvel.z * forwardRotated.z;
-      const isMovingBackward = forwardSpeed < 0;
-      let steerEffective = isMovingBackward ? this.inputState.steer : -this.inputState.steer;
-      
-      // Reduce steering sensitivity for normal turns (makes turns smaller/more gradual)
-      // Full steering input still reaches maxTurnRate, but normal inputs are scaled down
-      const steeringSensitivity = 0.65; // Lower = smaller normal turns
-      steerEffective *= steeringSensitivity;
-
-      const steerAngle = steerEffective * maxTurnRate * Math.max(0.0001, deltaTime); // radians this tick
-
-      const cosA = Math.cos(steerAngle);
-      const sinA = Math.sin(steerAngle);
-      const newVx = linvel.x * cosA - linvel.z * sinA;
-      const newVz = linvel.x * sinA + linvel.z * cosA;
-      body.setLinvel({ x: newVx, y: linvel.y, z: newVz }, true);
-    }
-    
-    // If we're moving FORWARD and the player releases A/D, kill any leftover curved heading.
-    // (Backward already feels correct; forward used to "keep turning" because the velocity stayed bent.)
-    linvel = body.linvel();
-    const speedHRelease = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
-    if (this.inputState.steer === 0 && speedHRelease > 0.05) {
-      const forwardSpeed =
-        linvel.x * forwardRotated.x +
-        linvel.z * forwardRotated.z;
-      const isMovingForward = forwardSpeed > 0;
-      if (isMovingForward) {
-        const fLen = Math.sqrt(forwardRotated.x ** 2 + forwardRotated.z ** 2) || 1;
-        const fx = forwardRotated.x / fLen;
-        const fz = forwardRotated.z / fLen;
-        body.setLinvel({ x: fx * speedHRelease, y: linvel.y, z: fz * speedHRelease }, true);
+      // If we're moving FORWARD and the player releases A/D, kill any leftover curved heading.
+      // (Backward already feels correct; forward used to "keep turning" because the velocity stayed bent.)
+      linvel = body.linvel();
+      const speedHRelease = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
+      if (this.inputState.steer === 0 && speedHRelease > 0.05) {
+        const forwardSpeed =
+          linvel.x * forwardRotated.x +
+          linvel.z * forwardRotated.z;
+        const isMovingForward = forwardSpeed > 0;
+        if (isMovingForward) {
+          const fLen = Math.sqrt(forwardRotated.x ** 2 + forwardRotated.z ** 2) || 1;
+          const fx = forwardRotated.x / fLen;
+          const fz = forwardRotated.z / fLen;
+          body.setLinvel({ x: fx * speedHRelease, y: linvel.y, z: fz * speedHRelease }, true);
+        }
       }
     }
 
     // 4) Rotate body to face the movement direction (visual rotation), independent from steering input
     // Make turn rate constant from start to middle (no ramp-up)
-    linvel = body.linvel();
-    const speedH2 = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
-    if (speedH2 > 0.15) {
+    // Skip if flipped
+    if (!flipped) {
+      linvel = body.linvel();
+      const speedH2 = Math.sqrt(linvel.x ** 2 + linvel.z ** 2);
+      if (speedH2 > 0.15) {
       const velDir = { x: linvel.x / speedH2, y: 0, z: linvel.z / speedH2 };
 
       // Refresh rotation -> forward to compute correct angleDiff
@@ -253,6 +274,7 @@ export class Car {
       
       const angvel = body.angvel();
       body.setAngvel({ x: angvel.x, y: targetYawRate, z: angvel.z }, true);
+      }
     }
 
     // Apply friction

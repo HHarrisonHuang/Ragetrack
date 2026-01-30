@@ -93,6 +93,11 @@ io.on('connection', (socket) => {
     console.log('📥 Received custom map from client:', socket.id);
     gameServer.setCustomMap(mapData);
   });
+
+  socket.on('respawnRequest', () => {
+    console.log('📥 Received respawnRequest from socket:', socket.id);
+    gameServer.handleRespawnRequest(socket.id);
+  });
 });
 
 // ============================================

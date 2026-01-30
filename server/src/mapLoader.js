@@ -26,20 +26,20 @@ export class MapLoader {
     // Matches shared/maps/defaultMap.json
     const defaultMap = {
       blocks: [
-        { type: 'platform', position: [0, 0, 0], size: [100, 1, 40] },
+        { type: 'platform', position: [0, 0, 0], size: [200, 1, 80] },
         { type: 'platform', position: [0, 2, 0], size: [8, 4, 8] },
       ],
       bases: {
-        red: { position: [-40, 0.6, 0], size: [15, 0.2, 14] },
-        blue: { position: [40, 0.6, 0], size: [15, 0.2, 14] },
+        red: { position: [-80, 0.6, 0], size: [15, 0.2, 14] },
+        blue: { position: [80, 0.6, 0], size: [15, 0.2, 14] },
       },
       spawnPoints: {
-        red: [{ position: [-35, 2, 0], rotation: [0, Math.PI / 2, 0] }],
-        blue: [{ position: [35, 2, 0], rotation: [0, -Math.PI / 2, 0] }],
+        red: [{ position: [-75, 2, 0], rotation: [0, Math.PI * 3 / 2, 0] }],
+        blue: [{ position: [75, 2, 0], rotation: [0, Math.PI / 2, 0] }],
       },
       flags: {
-        red: { position: [-40, 1, 0] },
-        blue: { position: [40, 1, 0] },
+        red: { position: [-80, 1, 0] },
+        blue: { position: [80, 1, 0] },
       },
     };
     

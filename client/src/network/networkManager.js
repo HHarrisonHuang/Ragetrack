@@ -214,6 +214,12 @@ export class NetworkManager extends EventEmitter {
     }
   }
 
+  sendRespawnRequest() {
+    if (this.socket && this.connected) {
+      this.socket.emit('respawnRequest');
+    }
+  }
+
   disconnect() {
     if (this.socket) {
       this.socket.disconnect();
