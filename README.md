@@ -37,10 +37,6 @@ This will start:
 
 This is the quickest way for **friends in different places** to join your server without port-forwarding.
 
-### Prereqs
-
-- Install ngrok: `https://ngrok.com/download`
-
 ### Host (you)
 
 1. Start the server:
@@ -131,15 +127,6 @@ Your Socket.IO server currently allows `http://localhost:3000` as the web client
   /maps              - Map definitions
 ```
 
-## Development Roadmap
-
-- ✅ Phase 1: Core Movement and Physics
-- ✅ Phase 2: Server-Authoritative Multiplayer
-- ✅ Phase 3: Capture the Flag Logic
-- ✅ Phase 4: Collision and Elimination Rules
-- ✅ Phase 5: Map System and Loading
-- ⏳ Phase 6: Map Editor
-- ✅ Phase 7: Gameplay Rules and Win Conditions
 
 ## License
 
